@@ -48,7 +48,11 @@ def return_transitions_frequency(
 def return_fired_transition(transition_weights: dict, enabled_transitions: set) -> PetriNet.Transition:
 
     weights = [float(transition_weights.get(t, 0.01)) for t in enabled_transitions]
-    chosen = random.choices(list(enabled_transitions), weights=weights, k=1)[0]
+    if sum(weights)>0:
+        chosen = random.choices(list(enabled_transitions), weights=weights, k=1)[0]
+    else:
+        chosen = random.choice(list(enabled_transitions))
+
     return chosen
 
 
@@ -242,7 +246,7 @@ class ProcessModelModule:
             clf = self.transition_dist.get(t)
             if clf is None:
                 # new desicion tree built
-                print(f"Build Decision Tree new transition: {t} at {trace.iloc[-1][START_TIME_KEY]}")
+                # print(f"Build Decision Tree new transition: {t} at {trace.iloc[-1][START_TIME_KEY]}")
                 self.dt_update_time += 1
                 ys = [y for _, y in self.t_buffers[t]]
                 if ys.count(1) >= self.min_pos_neg and ys.count(0) >= self.min_pos_neg: # sample enough
@@ -266,7 +270,7 @@ class ProcessModelModule:
 
                     if self.t_detectors[t].drift_detected:
                         self.dt_update_time += 1
-                        print(f"Decision Tree re-built for transition: {t} at {trace.iloc[-1][START_TIME_KEY]}")
+                        # print(f"Decision Tree re-built for transition: {t} at {trace.iloc[-1][START_TIME_KEY]}")
                         new_clf = tree.HoeffdingAdaptiveTreeClassifier(
                             seed=72, leaf_prediction="mc", max_depth=max_depth, grace_period=self.grace_period
                         )
@@ -290,7 +294,7 @@ class ProcessModelModule:
         self.detector.update(1.0 - trace_fitness) 
 
         if self.detector.drift_detected and len(self.complete_traces)>50:
-            print(f"Update Process Model at {complete_trace.iloc[-1][END_TIME_KEY]}")
+            # print(f"Update Process Model at {complete_trace.iloc[-1][END_TIME_KEY]}")
             self.net_update_time += 1
             
             win = min(len(self.complete_traces), 200)

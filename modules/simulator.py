@@ -59,7 +59,7 @@ class Simulator:
                     self.process_model.update(complete_trace)
             else: # new trace
                 self.ongoing_trace[case_id] = pd.DataFrame([event])
-                initial_trace_time = self.arrival_model.get_arrival_time(event, update_flag=True)
+                initial_trace_time = self.arrival_model.get_arrival_time(event)
                 act_trace = self._generate_activity_trace()
                 trace = self._generate_traces(act_trace, initial_trace_time, )
                 self.sim_traces.extend(trace)

@@ -64,7 +64,9 @@ def build_training_df_arrival(
         dict_df['hour'].append(cur_ts.hour)
         dict_df['weekday'].append(cur_ts.weekday())
         # minus non-working hours
-        ar_time = max((next_ts - cur_ts).total_seconds()/60 - count_false_hours(calendar_arrival, cur_ts, next_ts)*60, 0)
+        off = max(count_false_hours(calendar_arrival, cur_ts, next_ts), 0.0)
+        dt  = (next_ts - cur_ts).total_seconds()/60.0
+        ar_time = max(dt - off*60.0, 0.0) #min
         dict_df['arrival_time'].append(ar_time)   
     
     df = pd.DataFrame(dict_df)
@@ -115,8 +117,9 @@ class ArrivalTimeModule:
     def get_arrival_time(self, trace_first_event):
         self.case_id += 1
         real_trace_time = trace_first_event[START_TIME_KEY]
-        arrival_delta = self.arrival_time_model.predict_one({'hour': self.last_arrival_time.hour,
+        delta = self.arrival_time_model.predict_one({'hour': self.last_arrival_time.hour,
                                                            'weekday': self.last_arrival_time.weekday()})
+        arrival_delta = max(self.min_at, min(delta, self.max_at))
         predict_arrival_time = add_minutes_with_calendar(self.last_arrival_time, arrival_delta, self.arrival_calendar)
 
         self.arrival_times.append(real_trace_time)
@@ -127,7 +130,7 @@ class ArrivalTimeModule:
         # 1 mismatch
         mismatch = int(not is_arrival_period)
         if mismatch:
-            print(f"Update Arrival Calendar at {real_trace_time}")
+            # print(f"Update Arrival Calendar at {real_trace_time}")
             self.arrival_calendar[real_trace_time.weekday()][real_trace_time.hour]=True
 
         real_last_arrival = self.arrival_times[-2] if len(self.arrival_times)>1 else self.last_arrival_time
@@ -136,10 +139,12 @@ class ArrivalTimeModule:
         real_predict_arrival = add_minutes_with_calendar(real_last_arrival, real_predict_delta, self.arrival_calendar)
 
         err_min = cal_error_with_calendar(real_predict_arrival, real_trace_time, self.arrival_calendar)
+        rng = max(self.max_at - self.min_at, 1e-6)
+        x = min(err_min / rng, 1.0)
         self.detector.update(err_min)
 
         if self.detector.drift_detected:# retrain
-            print(f"Update Arrival Time Model at {real_trace_time}")
+            # print(f"Update Arrival Time Model at {real_trace_time}")
             self.update_num += 1
             update_log = self.update_rows[-int(self.detector.width):]
             update_log = pd.DataFrame(update_log)

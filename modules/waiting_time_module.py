@@ -58,7 +58,6 @@ class WaitingTimeModule:
         return sum(1 for (s, e) in self.active_intervals.get(res, ()) if s <= ts < e)
 
     def discover_waiting_time_time_distrib(self, log: pd.DataFrame, grace_period: int = 1000, max_depth: int = 5):
-        print("Waiting Time discovery...")
         resources = list(self.resource_calendars.keys())
         df_per_res = build_training_df_wt(log, self.resource_calendars)
 
@@ -146,7 +145,7 @@ class WaitingTimeModule:
 
             if self.detectors[res].drift_detected:
                 self.rebuilding_time += 1
-                print(f"Rebuliding Waiting Time Module for res: {res} at {start_ts}")
+                # print(f"Rebuliding Waiting Time Module for res: {res} at {start_ts}")
                 new_model = tree.HoeffdingAdaptiveTreeRegressor(leaf_prediction="mean", max_depth=5, seed=72, grace_period=self.grace_period)
                 for Xb, yb in self.buffers[res]:
                     new_model.learn_one(Xb, yb)

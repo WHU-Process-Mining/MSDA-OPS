@@ -141,23 +141,12 @@ class ResourceModule:
             self.res_buffers[res] = deque(maxlen=1000)
         if res not in self.resources:
             self.resources.append(res)
-
-        if res in self.cal_detectors:
-            for t in (start_ts, end_ts):
-                in_duty = is_on_duty(self.resource_calendar, res, t)
-                self.cal_detectors[res].update(in_duty)
-
-        self.res_buffers[res].append((start_ts, end_ts))
-
-
-        if self.cal_detectors[res].drift_detected:
-            self.calendar_rebuilt_time += 1
-            print(f"Resource Calendar Rebuilt for res: {res} at {start_ts}")
-            buf = list(self.res_buffers[res])
-            df_r = pd.DataFrame([{RESOURCE_KEY: res, START_TIME_KEY: s, END_TIME_KEY: e} for (s, e) in buf])
-            new_cal_all = self.discover_res_calendars(df_r)
-            self.resource_calendar[res] = new_cal_all[res]
-            self.cal_detectors[res] = ADWIN(min_window_length=200, delta=0.01)
+        
+        # calendar update
+        for t in (start_ts, end_ts):
+            in_duty = is_on_duty(self.resource_calendar, res, t)
+            if not in_duty:
+                self.resource_calendar[res][t.weekday()][t.hour]=True
 
         # act-> res distribution
         dist_a = self.act_resource_dist.get(act, {})
@@ -169,7 +158,7 @@ class ResourceModule:
 
         if self.act_detectors[act].drift_detected:
             self.act_res_dist_rebuilt_time += 1
-            print(f"Activity Resource Rebuilt for act: {act} at {start_ts}")
+            # print(f"Activity Resource Rebuilt for act: {act} at {start_ts}")
             recent = list(self.act_buffers[act])
             cnt = Counter(recent)
             self.act_res_counts[act] = cnt
