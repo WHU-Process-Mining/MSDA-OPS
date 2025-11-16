@@ -5,20 +5,22 @@ import pm4py
 from pm4py.objects.petri_net.obj import PetriNet, Marking
 from pm4py.algo.conformance.alignments.petri_net import algorithm as alignments
 from pm4py.algo.evaluation.replay_fitness import algorithm as replay_fitness
-from pm4py.algo.conformance.tokenreplay.algorithm import apply as token_replay
 from collections import deque, defaultdict
-from river import tree, stats
+from river import stats
 from river.drift import ADWIN
+from river.tree.hoeffding_adaptive_tree_classifier import HoeffdingAdaptiveTreeClassifier
 from modules.simulator import CASE_ID_KEY, ACTIVITY_KEY, START_TIME_KEY, END_TIME_KEY
 
 def compute_transition_weights_from_model(models_t: dict, dict_x: dict) -> dict:
     transition_weights = dict()
     list_transitions = list(models_t.keys())
     for t in list_transitions:
-        if models_t[t] is None:
-            transition_weights[t] = 0.01
-        else:
+        if type(models_t[t]) == HoeffdingAdaptiveTreeClassifier:
             transition_weights[t] = models_t[t].predict_proba_one(dict_x)[1]
+        elif models_t[t]:
+            transition_weights[t] = models_t[t]
+        else: # no sample
+            transition_weights[t] = 0.0
         
     return transition_weights
 
@@ -47,7 +49,7 @@ def return_transitions_frequency(
 
 def return_fired_transition(transition_weights: dict, enabled_transitions: set) -> PetriNet.Transition:
 
-    weights = [float(transition_weights.get(t, 0.01)) for t in enabled_transitions]
+    weights = [float(transition_weights.get(t, 0.0)) for t in enabled_transitions]
     if sum(weights)>0:
         chosen = random.choices(list(enabled_transitions), weights=weights, k=1)[0]
     else:
@@ -112,11 +114,18 @@ def build_training_datasets(
         log: pd.DataFrame, 
         net: PetriNet, 
         initial_marking: Marking, 
-        final_marking: Marking) -> dict:
+        final_marking: Marking,
+        k_last: int=5) -> dict:
 
     net_transition_labels = list(set([t.label for t in net.transitions if t.label]))
-    t_dicts_dataset = {t: {t_l: [] for t_l in net_transition_labels} |
-                          {'class': []} for t in net.transitions}
+    def _feature_dict():
+        d = {t_l: [] for t_l in net_transition_labels} # cont
+        for p in range(1, k_last + 1):
+            for t_l in net_transition_labels:
+                d[f'last{p}=={t_l}'] = []               # last-k
+        d['class'] = []
+        return d
+    t_dicts_dataset = {t: _feature_dict() for t in net.transitions}
 
     re_log = log.rename(columns={'Case ID': 'case:concept:name',
                                 'Activity': 'concept:name',
@@ -135,6 +144,12 @@ def build_training_datasets(
             transitions_fired = [label for label, value in zip(visited_transitions[:j], is_fired[:j]) if value == 1]
             for t_ in net_transition_labels:
                 t_dicts_dataset[t][t_].append([x.label for x in transitions_fired].count(t_))
+            
+            visibel_transitions_fired = [fired_t.label for fired_t in transitions_fired if fired_t.label]
+            for p in range(1, k_last + 1):
+                lbl_p = visibel_transitions_fired[-p] if len(visibel_transitions_fired) >= p else None
+                for t_l in net_transition_labels:
+                    t_dicts_dataset[t][f'last{p}=={t_l}'].append(1 if (lbl_p is not None and lbl_p == t_l) else 0)
 
     datasets_t = {t: pd.DataFrame(t_dicts_dataset[t]) for t in net.transitions}
 
@@ -145,6 +160,8 @@ class ProcessModelModule:
     def __init__(self, initial_log: pd.DataFrame, completed_caseids: list, grace_period: int = 1000):
         print("Process Model Initialization...")
         self.grace_period = grace_period
+        self.min_pos_neg = 10
+        self.k_last = 5
         initial_log_complete = initial_log[initial_log[CASE_ID_KEY].isin(completed_caseids)]
         self.net, self.im, self.fm = pm4py.discover_petri_net_inductive(initial_log_complete,
                                                               case_id_key=CASE_ID_KEY,
@@ -153,39 +170,53 @@ class ProcessModelModule:
         self.transition_labels= list(set([t.label for t in self.net.transitions if t.label]))
         self.transition_dist = self.discover_transition_dist(initial_log, grace_period)
 
-        self.t_buffers = defaultdict(lambda: deque(maxlen=500))    # t -> deque[(X, y)]
+        self.t_buffers = defaultdict(lambda: deque(maxlen=1000))    # t -> deque[(X, y)]
         self.t_detectors = defaultdict(lambda: ADWIN(min_window_length=200, delta=0.01))  # 概念漂移
         self.t_loss_ewm = defaultdict(lambda: stats.EWMean(0.95))  # 平滑损失
-        self.min_pos_neg = 1
 
         self.complete_traces = []
         self.net_update_time = 0
+        self.dt_new_build_time = 0
         self.dt_update_time = 0
-        self.detector = ADWIN(min_window_length=50, delta=0.01)
+        self.detector = ADWIN(min_window_length=10, delta=0.01)
     
     def discover_transition_dist(self, log: pd.DataFrame, grace_period: int = 1000, max_depth: int = 3) -> dict :
-        datasets_t = build_training_datasets(log, self.net, self.im, self.fm)
+        datasets_t = build_training_datasets(log, self.net, self.im, self.fm, self.k_last)
 
         models_t = dict()
 
         for t in tqdm(self.net.transitions):
             data_t = datasets_t[t]
-            if len(data_t['class'].unique())<2:
-                models_t[t] = None
-                continue
-            
-            models_t[t] = tree.HoeffdingAdaptiveTreeClassifier(seed=72, leaf_prediction="mc", max_depth=max_depth, grace_period=grace_period)
+            ys = list(data_t['class'])
+            if ys.count(1) >= self.min_pos_neg and ys.count(0) >= self.min_pos_neg:
+                models_t[t] = HoeffdingAdaptiveTreeClassifier(seed=72, leaf_prediction="mc", max_depth=max_depth, grace_period=grace_period)
 
-            for _, row in data_t.iterrows():
-                X_row = row.drop('class').to_dict()
-                y_row = row['class']
-                models_t[t].learn_one(X_row, y_row)
+                for _, row in data_t.iterrows():
+                    X_row = row.drop('class').to_dict()
+                    y_row = row['class']
+                    models_t[t].learn_one(X_row, y_row)
+            else:
+                pos = ys.count(1)
+                tot = len(ys)
+                if tot:
+                    prior = pos  / tot
+                    models_t[t] = prior
+                else: # no sample
+                    models_t[t] = None
 
         return models_t
     
-    def get_next_transition(self, state: Marking, dict_x: dict= None):
-        if not dict_x:
-            dict_x = {t_l: 0 for t_l in self.transition_labels}
+    def get_next_transition(self, state: Marking, executed_trace: list):
+        net_transition_labels = list(set([t.label for t in self.net.transitions if t.label]))
+        dict_x = {t_l: 0 for t_l in self.transition_labels}
+        for p in range(1, self.k_last + 1):
+            for t_l in net_transition_labels:
+                dict_x[f'last{p}=={t_l}'] = 0
+        for p in range (1, len(executed_trace)+1):
+            act = executed_trace[-p]
+            if p <= self.k_last:
+                dict_x[f'last{p}=={act}'] = 1 # last-k
+            dict_x[act] += 1  # act fre
 
         enabled_transitions = return_enabled_transitions(self.net, state)
         
@@ -195,13 +226,19 @@ class ProcessModelModule:
 
         state = update_markings(state, t_fired)
 
-        return t_fired, state, dict_x
+        return t_fired, state
     
     def continue_learning(self, trace:pd.DataFrame, max_depth: int = 3):
         net_transition_labels = list(set([t.label for t in self.net.transitions if t.label]))
         
         X_row = {t_l: 0 for t_l in net_transition_labels}
-
+        for _, event in trace.iterrows():
+            X_row[event[ACTIVITY_KEY]] += 1
+        for p in range(1, self.k_last + 1):
+            lp = trace.iloc[-(p+1)][ACTIVITY_KEY] if len(trace) >= p+1 else None
+            for l in net_transition_labels:
+                X_row[f'last{p}=={l}'] = 1 if (lp == l) else 0
+        
         re_trace = trace.rename(columns={CASE_ID_KEY: 'case:concept:name',
                                 ACTIVITY_KEY: 'concept:name',
                                 END_TIME_KEY: 'time:timestamp'})
@@ -222,12 +259,7 @@ class ProcessModelModule:
         j_prev = prev_vis[-1] if prev_vis else -1
 
         start_idx = j_prev + 1
-        end_idx   = j_curr + 1
-
-        for i in range(start_idx):
-            t = visited_transitions[i]
-            if t.label:
-                X_row[t.label] += 1
+        end_idx   = j_curr + 1     
         
         t_dicts_dataset = {t: {'feature':[], 'class': []} for t in self.net.transitions}
         
@@ -236,28 +268,30 @@ class ProcessModelModule:
             t_fired = is_fired[j]
             t_dicts_dataset[t]['feature'].append(X_row.copy())
             t_dicts_dataset[t]['class'].append(t_fired)
-            if t.label:
-                X_row[t.label] += 1
         
         for t, dict_t in t_dicts_dataset.items():
             for X, y in zip(dict_t['feature'], dict_t['class']):
                 self.t_buffers[t].append((X, y))
 
             clf = self.transition_dist.get(t)
-            if clf is None:
-                # new desicion tree built
-                # print(f"Build Decision Tree new transition: {t} at {trace.iloc[-1][START_TIME_KEY]}")
-                self.dt_update_time += 1
+            if type(clf) != HoeffdingAdaptiveTreeClassifier:
                 ys = [y for _, y in self.t_buffers[t]]
                 if ys.count(1) >= self.min_pos_neg and ys.count(0) >= self.min_pos_neg: # sample enough
-                    clf = tree.HoeffdingAdaptiveTreeClassifier(
+                    # new desicion tree built
+                    print(f"Build Decision Tree new transition: {t} at {trace.iloc[-1][START_TIME_KEY]}")
+                    self.dt_new_build_time += 1
+                    clf = HoeffdingAdaptiveTreeClassifier(
                         seed=72, leaf_prediction="mc", max_depth=max_depth, grace_period=self.grace_period
                     )
                     for Xb, yb in self.t_buffers[t]:
                         clf.learn_one(Xb, yb)
                     self.transition_dist[t] = clf
                 else: # sample not enough
-                    continue # 
+                    pos = sum(1 for _, y in self.t_buffers[t] if y == 1)
+                    tot = len(self.t_buffers[t])
+                    if tot:
+                        prior = pos  / tot
+                        self.transition_dist[t] = prior  
             else:
                 # continue learning
                 for X, y in zip(dict_t['feature'], dict_t['class']):
@@ -270,8 +304,8 @@ class ProcessModelModule:
 
                     if self.t_detectors[t].drift_detected:
                         self.dt_update_time += 1
-                        # print(f"Decision Tree re-built for transition: {t} at {trace.iloc[-1][START_TIME_KEY]}")
-                        new_clf = tree.HoeffdingAdaptiveTreeClassifier(
+                        print(f"Decision Tree re-built for transition: {t} at {trace.iloc[-1][START_TIME_KEY]}")
+                        new_clf = HoeffdingAdaptiveTreeClassifier(
                             seed=72, leaf_prediction="mc", max_depth=max_depth, grace_period=self.grace_period
                         )
                         for Xb, yb in self.t_buffers[t]:
@@ -309,6 +343,9 @@ class ProcessModelModule:
 
             self.complete_traces = []
             self.detector = ADWIN(min_window_length=200, delta=0.01)
+            self.t_buffers.clear()
+            self.t_detectors.clear()
+            self.t_loss_ewm.clear()
 
         
 

@@ -74,7 +74,8 @@ class Simulator:
 
         print(f'Arrival Model Updating Num:{self.arrival_model.update_num}')
         print(f'Process Model Updating Num:{self.process_model.net_update_time}')
-        print(f'Process Decision Tree Updating Num:{self.process_model.dt_update_time}')
+        print(f'Process Decision Tree New-build Num:{self.process_model.dt_new_build_time}')
+        print(f'Process Decision Tree Re-build Num:{self.process_model.dt_update_time}')
         print(f'Resource Calendar Updating Num:{self.resource_model.calendar_rebuilt_time}')
         print(f'Activty-Resource Distribution Updating Num:{self.resource_model.act_res_dist_rebuilt_time}')
         print(f'Waiting Time Model Updating Num:{self.waiting_time_model.rebuilding_time}')
@@ -92,21 +93,19 @@ class Simulator:
         self.waiting_time_model.update(trace, self.resource_model.resource_calendar)
     
 
-    def _generate_activity_trace(self):
+    def _generate_activity_trace(self,):
         """ Generate Activity Traces """
 
         activity_trace = []
 
         while len(activity_trace)==0:
             tkns = list(self.process_model.im)
-            t_fired, tkns, dict_x  = self.process_model.get_next_transition(tkns)
+            t_fired, tkns = self.process_model.get_next_transition(tkns, activity_trace)
             if t_fired.label:
                 activity_trace.append(t_fired.label)
 
             while set(tkns) != set(self.process_model.fm):
-                if t_fired.label:
-                    dict_x[t_fired.label] += 1
-                t_fired, tkns, dict_x  = self.process_model.get_next_transition(tkns, dict_x)
+                t_fired, tkns = self.process_model.get_next_transition(tkns, activity_trace)
                 if t_fired.label:
                     activity_trace.append(t_fired.label)
         
