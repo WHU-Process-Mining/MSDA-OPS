@@ -44,7 +44,7 @@ class Simulator:
         self.processed_events = 0
         self.current_timestamp = None
     
-    def apply_online_simulation(self, streams: pd.DataFrame, sim_num: int):
+    def apply_online_simulation(self, streams: pd.DataFrame, sim_num: int, update_flag: bool = True):
         self.sim_num = sim_num
         counts = Counter(streams[CASE_ID_KEY])
         for _, event in tqdm(streams.iterrows(), total=len(streams)):
@@ -56,22 +56,25 @@ class Simulator:
 
                 if counts[case_id] == 0: # trace is complete
                     complete_trace = self.ongoing_trace.pop(case_id)
-                    self.process_model.update(complete_trace)
+                    if update_flag:
+                        self.process_model.update(complete_trace)
             else: # new trace
                 self.ongoing_trace[case_id] = pd.DataFrame([event])
-                initial_trace_time = self.arrival_model.get_arrival_time(event)
+                initial_trace_time = self.arrival_model.get_arrival_time(event, update_flag)
                 act_trace = self._generate_activity_trace()
                 trace = self._generate_traces(act_trace, initial_trace_time, )
                 self.sim_traces.extend(trace)
                 self.case_id += 1
-
             if case_id in self.ongoing_trace:
                 update_trace = self.ongoing_trace[case_id]
             else:# complete just now
                 update_trace = complete_trace
-            
-            self.update_event_level_model(update_trace)
-
+            if update_flag:
+                self.update_event_level_model(update_trace)
+        print("Process Parameter:")
+        print(f"min_pos_neg:{self.process_model.min_pos_neg}")
+        print(f"k_last:{self.process_model.k_last}")
+        print(f"neg_num:{self.process_model.neg_num}")
         print(f'Arrival Model Updating Num:{self.arrival_model.update_num}')
         print(f'Process Model Updating Num:{self.process_model.net_update_time}')
         print(f'Process Decision Tree New-build Num:{self.process_model.dt_new_build_time}')
@@ -85,8 +88,9 @@ class Simulator:
         assert self.sim_num == sim_log[CASE_ID_KEY].nunique(), "Simulation num is Wrong!"
         return sim_log
     
-    def update_event_level_model(self, trace: pd.DataFrame):
+    def update_event_level_model(self, trace: pd.DataFrame, update_flag: bool = True):
         cur_event = trace.iloc[-1]
+
         self.process_model.continue_learning(trace)
         self.resource_model.update_model(cur_event)
         self.excution_time_model.update(trace, self.resource_model.resource_calendar)

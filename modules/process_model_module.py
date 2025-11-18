@@ -6,15 +6,15 @@ from pm4py.objects.petri_net.obj import PetriNet, Marking
 from pm4py.algo.conformance.alignments.petri_net import algorithm as alignments
 from pm4py.algo.evaluation.replay_fitness import algorithm as replay_fitness
 from collections import deque, defaultdict
-from river.drift import PageHinkley
-from river.tree.hoeffding_adaptive_tree_classifier import HoeffdingAdaptiveTreeClassifier
+from river.drift import ADWIN
+from river.tree.hoeffding_tree_classifier import HoeffdingTreeClassifier
 from modules.simulator import CASE_ID_KEY, ACTIVITY_KEY, START_TIME_KEY, END_TIME_KEY
 
 def compute_transition_weights_from_model(models_t: dict, dict_x: dict) -> dict:
     transition_weights = dict()
     list_transitions = list(models_t.keys())
     for t in list_transitions:
-        if isinstance(models_t[t], HoeffdingAdaptiveTreeClassifier):
+        if isinstance(models_t[t], HoeffdingTreeClassifier):
             transition_weights[t] = models_t[t].predict_proba_one(dict_x)[1]
         elif models_t[t]:
             transition_weights[t] = models_t[t]
@@ -49,7 +49,8 @@ def return_enabled_and_fired_transitions(
         net: PetriNet, 
         initial_marking: Marking, 
         final_marking: Marking, 
-        trace_aligned: list
+        trace_aligned: list,
+        neg_num: int=3,
     ) -> tuple:
 
     visited_transitions = []
@@ -63,6 +64,9 @@ def return_enabled_and_fired_transitions(
                 break
         # enable but not fired transitions
         not_fired_transitions = list(enabled_transitions-{t_fired})
+        if neg_num > 0:
+            k = min(neg_num, len(not_fired_transitions))
+            not_fired_transitions = random.sample(not_fired_transitions, k)
         for t_not_fired in not_fired_transitions:
             visited_transitions.append(t_not_fired)
             is_fired.append(0)
@@ -91,7 +95,8 @@ def build_training_datasets(
         net: PetriNet, 
         initial_marking: Marking, 
         final_marking: Marking,
-        k_last: int=5) -> dict:
+        k_last: int=5,
+        neg_num: int=3) -> dict:
 
     net_transition_labels = list(set([t.label for t in net.transitions if t.label]))
     net_transition_labels = sorted(net_transition_labels)
@@ -112,7 +117,7 @@ def build_training_datasets(
     aligned_traces = [[y[0] for y in x['alignment'] if y[0][1]!='>>'] for x in alignments_]
     
     for trace_aligned in aligned_traces:
-        visited_transitions, is_fired = return_enabled_and_fired_transitions(net, initial_marking, final_marking, trace_aligned)
+        visited_transitions, is_fired = return_enabled_and_fired_transitions(net, initial_marking, final_marking, trace_aligned, neg_num)
         for j in range(len(visited_transitions)):
             t = visited_transitions[j]
             t_fired = is_fired[j]
@@ -137,34 +142,25 @@ class ProcessModelModule:
     def __init__(self, initial_log: pd.DataFrame, completed_caseids: list, grace_period: int = 1000):
         print("Process Model Initialization...")
         self.grace_period = grace_period
-        self.min_pos_neg = 3
-        self.k_last = 3
+        self.min_pos_neg = 20
+        self.k_last = 0
+        self.neg_num = 0
         initial_log_complete = initial_log[initial_log[CASE_ID_KEY].isin(completed_caseids)]
         self.net, self.im, self.fm = pm4py.discover_petri_net_inductive(initial_log_complete,
                                                               case_id_key=CASE_ID_KEY,
                                                               activity_key=ACTIVITY_KEY,
                                                               timestamp_key=END_TIME_KEY)
         self.transition_dist = self.discover_transition_dist(initial_log, grace_period)
-        self.t_buffers = defaultdict(lambda: deque(maxlen=1000))    # t -> deque[(X, y)]
-        self.t_detectors = defaultdict(lambda: PageHinkley(
-                                        min_instances=300,   # 至少看这么多点后才可能触发
-                                        delta=0.005,         # 学习率/缓冲，越小越灵敏
-                                        threshold=50,          # 触发阈值，越大越保守
-                                        alpha=1.0,            # 惩罚系数
-                                        mode='up'))
+        self.t_buffers = defaultdict(lambda: deque(maxlen=500))    # t -> deque[(X, y)]
+        self.t_detectors = defaultdict(lambda: ADWIN(min_window_length=200, delta=0.002))
         
         self.complete_traces = deque(maxlen=200)
         self.net_update_time = 0
         self.dt_new_build_time = 0
         self.dt_update_time = 0
-        self.detector = PageHinkley(min_instances=50,   # 至少看这么多点后才可能触发
-                                    delta=0.005,         # 学习率/缓冲，越小越灵敏
-                                    threshold=50,          # 触发阈值，越大越保守
-                                    alpha=1.0,            # 惩罚系数
-                                    mode='up')
     
     def discover_transition_dist(self, log: pd.DataFrame, grace_period: int = 1000, max_depth: int = 5) -> dict :
-        datasets_t = build_training_datasets(log, self.net, self.im, self.fm, self.k_last)
+        datasets_t = build_training_datasets(log, self.net, self.im, self.fm, self.k_last, self.neg_num)
 
         models_t = dict()
 
@@ -172,7 +168,7 @@ class ProcessModelModule:
             data_t = datasets_t[t]
             ys = list(data_t['class'])
             if ys.count(1) >= self.min_pos_neg and ys.count(0) >= self.min_pos_neg:
-                models_t[t] = HoeffdingAdaptiveTreeClassifier(seed=72, leaf_prediction="mc", max_depth=max_depth, grace_period=grace_period)
+                models_t[t] = HoeffdingTreeClassifier(leaf_prediction="mc", max_depth=max_depth, grace_period=grace_period)
 
                 for _, row in data_t.iterrows():
                     X_row = row.drop('class').to_dict()
@@ -218,7 +214,8 @@ class ProcessModelModule:
         X_row = {t_l: 0 for t_l in net_transition_labels}
         prefix = trace.iloc[:-1].copy()
         for _, event in prefix.iterrows():
-            X_row[event[ACTIVITY_KEY]] += 1
+            if event[ACTIVITY_KEY] in net_transition_labels:
+                X_row[event[ACTIVITY_KEY]] += 1
         for p in range(1, self.k_last + 1):
             lp = prefix.iloc[-p][ACTIVITY_KEY] if len(prefix) >= p else None
             for l in net_transition_labels:
@@ -233,7 +230,7 @@ class ProcessModelModule:
         aligned_trace = [y[0] for y in alignments_[0]['alignment'] if y[0][1]!='>>'] 
         
         
-        visited_transitions, is_fired = return_enabled_and_fired_transitions(self.net, self.im, self.fm, aligned_trace)
+        visited_transitions, is_fired = return_enabled_and_fired_transitions(self.net, self.im, self.fm, aligned_trace, self.neg_num)
         
         t_target = trace.iloc[-1][ACTIVITY_KEY]
         cand_curr = [i for i,(t,f) in enumerate(zip(visited_transitions, is_fired)) if f==1 and t.label==t_target]
@@ -255,28 +252,22 @@ class ProcessModelModule:
             t_dicts_dataset[t]['class'].append(t_fired)
         
         for t, dict_t in t_dicts_dataset.items():
-            for X, y in zip(dict_t['feature'], dict_t['class']):
-                self.t_buffers[t].append((X, y))
-
             clf = self.transition_dist.get(t)
-            if not isinstance(clf, HoeffdingAdaptiveTreeClassifier):
+            if not isinstance(clf, HoeffdingTreeClassifier):
+                for X, y in zip(dict_t['feature'], dict_t['class']):
+                    self.t_buffers[t].append((X, y))
                 ys = [y for _, y in self.t_buffers[t]]
                 if ys.count(1) >= self.min_pos_neg and ys.count(0) >= self.min_pos_neg: # sample enough
                     # new desicion tree built
                     print(f"Build Decision Tree new transition: {t} at {trace.iloc[-1][START_TIME_KEY]}")
                     self.dt_new_build_time += 1
-                    clf = HoeffdingAdaptiveTreeClassifier(
-                        seed=72, leaf_prediction="mc", max_depth=max_depth, grace_period=self.grace_period
+                    clf = HoeffdingTreeClassifier(
+                        leaf_prediction="mc", max_depth=max_depth, grace_period=self.grace_period
                     )
                     for Xb, yb in self.t_buffers[t]:
                         clf.learn_one(Xb, yb)
                     self.transition_dist[t] = clf
-                    self.t_detectors[t] = PageHinkley(
-                                        min_instances=200,   # 至少看这么多点后才可能触发
-                                        delta=0.005,         # 学习率/缓冲，越小越灵敏
-                                        threshold=50,          # 触发阈值，越大越保守
-                                        alpha=1.0,            # 惩罚系数
-                                        mode='up')
+                    self.t_detectors[t] = ADWIN(min_window_length= 200,delta=0.002)
                 else: # sample not enough
                     pos = sum(1 for _, y in self.t_buffers[t] if y == 1)
                     tot = len(self.t_buffers[t])
@@ -286,41 +277,31 @@ class ProcessModelModule:
             else:
                 # continue learning
                 for X, y in zip(dict_t['feature'], dict_t['class']):
+                    self.t_buffers[t].append((X, y))
                     proba = clf.predict_proba_one(X)[y]
                     error  = 1 - proba
                     self.t_detectors[t].update(error)
                     
                     if self.t_detectors[t].drift_detected:
-                        self.dt_update_time += 1
-                        width = int(self.t_detectors[t].width)
+                        width = min(int(self.t_detectors[t].width), len(self.t_buffers[t]))
                         recent = list(self.t_buffers[t])[-width:]
                         self.t_buffers[t] = deque(recent, maxlen=self.t_buffers[t].maxlen)
                         ys = [y for _, y in self.t_buffers[t]]
                         if ys.count(1) >= self.min_pos_neg and ys.count(0) >= self.min_pos_neg:
+                            self.dt_update_time += 1
                             print(f"Decision Model re-built for transition: {t} at {trace.iloc[-1][START_TIME_KEY]}")
 
-                            new_clf = HoeffdingAdaptiveTreeClassifier(
-                                seed=72, leaf_prediction="mc", max_depth=max_depth, grace_period=self.grace_period
+                            new_clf = HoeffdingTreeClassifier(
+                                leaf_prediction="mc", max_depth=max_depth, grace_period=self.grace_period
                             )
                             for Xb, yb in self.t_buffers[t]:
                                 new_clf.learn_one(Xb, yb)
+                            clf = new_clf
                             self.transition_dist[t] = new_clf
-                        else:
-                            print(f"Decision Model is disgard for transition: {t} at {trace.iloc[-1][START_TIME_KEY]}")
-                            pos = sum(1 for _, y in self.t_buffers[t] if y == 1)
-                            tot = len(self.t_buffers[t])
-                            if tot:
-                                prior = pos  / tot
-                                self.transition_dist[t] = prior
-                        
-                        
-                        self.t_detectors[t] = PageHinkley(
-                                    min_instances=200,   # 至少看这么多点后才可能触发
-                                    delta=0.005,         # 学习率/缓冲，越小越灵敏
-                                    threshold=50,          # 触发阈值，越大越保守
-                                    alpha=1.0,            # 惩罚系数
-                                    mode='up'
-                                )
+                        else: # sample not enough, use the old tree
+                            clf.learn_one(X, y)
+
+                        self.t_detectors[t] = ADWIN(min_window_length= 200, delta=0.002)
                     else:
                         clf.learn_one(X, y)
 
@@ -334,27 +315,17 @@ class ProcessModelModule:
         diag = replay_fitness.apply(df, self.net, self.im, self.fm,
                             variant=replay_fitness.Variants.ALIGNMENT_BASED)
         trace_fitness = float(diag["average_trace_fitness"])   # ∈[0,1]
-        self.detector.update(1.0 - trace_fitness)
 
-        if self.detector.drift_detected:
-            # print(f"Update Process Model at {complete_trace.iloc[-1][END_TIME_KEY]}")
+        if trace_fitness < 1:
+            print(f"Update Process Model at {complete_trace.iloc[-1][END_TIME_KEY]}")
             self.net_update_time += 1
-            
-            win = int(self.detector.width)
-            recent_traces = self.complete_traces[-win:]
-            log = pd.concat(recent_traces, ignore_index=True)
+            log = pd.concat(self.complete_traces, ignore_index=True)
             self.net, self.im, self.fm = pm4py.discover_petri_net_inductive(log,
                                                               case_id_key=CASE_ID_KEY,
                                                               activity_key=ACTIVITY_KEY,
                                                               timestamp_key=END_TIME_KEY)
             self.transition_dist = self.discover_transition_dist(log, self.grace_period)
 
-            self.complete_traces = recent_traces
-            self.detector = PageHinkley(min_instances=50,   # 至少看这么多点后才可能触发
-                                        delta=0.005,         # 学习率/缓冲，越小越灵敏
-                                        threshold=50,          # 触发阈值，越大越保守
-                                        alpha=1.0,            # 惩罚系数
-                                        mode='up')
             self.t_buffers.clear()
             self.t_detectors.clear()
 

@@ -114,46 +114,46 @@ class ArrivalTimeModule:
         self.max_at = max(self.max_at, df["arrival_time"].max())
 
 
-    def get_arrival_time(self, trace_first_event):
+    def get_arrival_time(self, trace_first_event, update_flag: bool = True):
         self.case_id += 1
         real_trace_time = trace_first_event[START_TIME_KEY]
         delta = self.arrival_time_model.predict_one({'hour': self.last_arrival_time.hour,
                                                            'weekday': self.last_arrival_time.weekday()})
         arrival_delta = max(self.min_at, min(delta, self.max_at))
         predict_arrival_time = add_minutes_with_calendar(self.last_arrival_time, arrival_delta, self.arrival_calendar)
-
-        self.arrival_times.append(real_trace_time)
         
-        self.update_rows.append({CASE_ID_KEY: f'case_{self.case_id}', START_TIME_KEY: real_trace_time, END_TIME_KEY: trace_first_event[END_TIME_KEY]})
+        self.arrival_times.append(real_trace_time)
+        if update_flag:
+            self.update_rows.append({CASE_ID_KEY: f'case_{self.case_id}', START_TIME_KEY: real_trace_time, END_TIME_KEY: trace_first_event[END_TIME_KEY]})
 
-        is_arrival_period = bool(self.arrival_calendar[real_trace_time.weekday()][real_trace_time.hour])
-        # 1 mismatch
-        mismatch = int(not is_arrival_period)
-        if mismatch:
-            # print(f"Update Arrival Calendar at {real_trace_time}")
-            self.arrival_calendar[real_trace_time.weekday()][real_trace_time.hour]=True
+            is_arrival_period = bool(self.arrival_calendar[real_trace_time.weekday()][real_trace_time.hour])
+            # 1 mismatch
+            mismatch = int(not is_arrival_period)
+            if mismatch:
+                # print(f"Update Arrival Calendar at {real_trace_time}")
+                self.arrival_calendar[real_trace_time.weekday()][real_trace_time.hour]=True
 
-        real_last_arrival = self.arrival_times[-2] if len(self.arrival_times)>1 else self.last_arrival_time
-        real_predict_delta = self.arrival_time_model.predict_one({'hour': real_last_arrival.hour,
-                                                            'weekday': real_last_arrival.weekday()})
-        real_predict_arrival = add_minutes_with_calendar(real_last_arrival, real_predict_delta, self.arrival_calendar)
+            real_last_arrival = self.arrival_times[-2] if len(self.arrival_times)>1 else self.last_arrival_time
+            real_predict_delta = self.arrival_time_model.predict_one({'hour': real_last_arrival.hour,
+                                                                'weekday': real_last_arrival.weekday()})
+            real_predict_arrival = add_minutes_with_calendar(real_last_arrival, real_predict_delta, self.arrival_calendar)
 
-        err_min = cal_error_with_calendar(real_predict_arrival, real_trace_time, self.arrival_calendar)
-        rng = max(self.max_at - self.min_at, 1e-6)
-        x = min(err_min / rng, 1.0)
-        self.detector.update(err_min)
+            err_min = cal_error_with_calendar(real_predict_arrival, real_trace_time, self.arrival_calendar)
+            rng = max(self.max_at - self.min_at, 1e-6)
+            x = min(err_min / rng, 1.0)
+            self.detector.update(err_min)
 
-        if self.detector.drift_detected:# retrain
-            # print(f"Update Arrival Time Model at {real_trace_time}")
-            self.update_num += 1
-            update_log = self.update_rows[-int(self.detector.width):]
-            update_log = pd.DataFrame(update_log)
-            self.arrival_time_model, self.min_at, self.max_at = self.discover_arrival_model(update_log)
-            self.update_rows = [{CASE_ID_KEY: f'case_{self.case_id}', START_TIME_KEY: real_trace_time, END_TIME_KEY: trace_first_event[END_TIME_KEY]}]
-        else: # single sample increment learning
-            update_log = pd.DataFrame(self.update_rows[-2:])
-            self.update_arrival_time_model(update_log)
-            
+            if self.detector.drift_detected:# retrain
+                print(f"Update Arrival Time Model at {real_trace_time}")
+                self.update_num += 1
+                update_log = self.update_rows[-int(self.detector.width):]
+                update_log = pd.DataFrame(update_log)
+                self.arrival_time_model, self.min_at, self.max_at = self.discover_arrival_model(update_log)
+                self.update_rows = [{CASE_ID_KEY: f'case_{self.case_id}', START_TIME_KEY: real_trace_time, END_TIME_KEY: trace_first_event[END_TIME_KEY]}]
+            else: # single sample increment learning
+                update_log = pd.DataFrame(self.update_rows[-2:])
+                self.update_arrival_time_model(update_log)
+                
         if len(self.arrival_times)==1: # first arrival trace
             predict_arrival_time = real_trace_time
         self.last_arrival_time = predict_arrival_time
