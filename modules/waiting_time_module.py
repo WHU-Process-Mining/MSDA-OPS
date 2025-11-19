@@ -72,8 +72,12 @@ class WaitingTimeModule:
 
             models_res[res] = tree.HoeffdingAdaptiveTreeRegressor(seed=72, leaf_prediction="mean", max_depth=max_depth, grace_period=grace_period)
             
-            min_wt[res] = df_res["waiting_time"].min()
-            max_wt[res] = df_res["waiting_time"].max()
+            if df_res.empty: # only one record, no sample for waiting time
+                min_wt[res] = 1440
+                max_wt[res] = 0
+            else:
+                min_wt[res] = df_res["waiting_time"].min()
+                max_wt[res] = df_res["waiting_time"].max()
 
             for _, row in df_res.iterrows():
                 X_row = row.drop('waiting_time').to_dict()
@@ -107,9 +111,9 @@ class WaitingTimeModule:
         if res not in self.active_intervals:
             self.active_intervals[res] = deque(maxlen=1000)
         if res not in self.min_wt:
-            self.min_wt[res] = math.inf
+            self.min_wt[res] = 1440
         if res not in self.max_wt:
-            self.max_wt[res] = -math.inf
+            self.max_wt[res] = 0
         if res not in self.err_window:
             self.err_window[res] = deque(maxlen=10)
 
