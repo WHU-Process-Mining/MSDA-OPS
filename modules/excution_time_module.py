@@ -53,9 +53,13 @@ def build_training_df_ex(
     df = pd.DataFrame(dict_df)
     # resource one-hot
     resources = list(res_calendars.keys())
-    for r in resources:
-        df['resource = '+r] = (df['resource'] == r)*1
-    del df['resource']
+    res_dummies = pd.get_dummies(df['resource'])
+    res_dummies = res_dummies.reindex(columns=resources, fill_value=0)
+    res_dummies.columns = [f"resource = {r}" for r in resources]
+    df = pd.concat(
+        [df.drop(columns=['resource']), res_dummies],
+        axis=1
+    )
 
     return df
 
@@ -67,10 +71,11 @@ class ExcutionTimeModule:
         self.activities = list(initial_log[ACTIVITY_KEY].unique())
         self.resource_calendars = resource_calendars
         self.excution_time_distrib, self.min_et, self.max_et = self.discover_excution_time_distrib(initial_log, grace_period)
-        self.detectors = {act: ADWIN(min_window_length=200) for act in self.activities}
-        self.err_ewm   = {act: stats.EWMean(fading_factor=0.95) for act in self.activities}
+        self.detectors = {act: ADWIN(min_window_length=10, delta=0.05) for act in self.activities}
         self.buffers   = {act: deque(maxlen=1000) for act in self.activities}
+        self.err_window = {act: deque(maxlen=10) for act in self.activities}
         self.rebuilding_time = 0
+        
 
     def discover_excution_time_distrib(self, log: pd.DataFrame, grace_period: int = 1000, max_depth: int = 5) -> dict:
         df = build_training_df_ex(log, self.activities, self.resource_calendars)
@@ -123,9 +128,10 @@ class ExcutionTimeModule:
                 leaf_prediction="mean", max_depth=5, seed=72, grace_period=self.grace_period, 
             )
         
-        self.detectors.setdefault(act, ADWIN(min_window_length=200, delta=0.01))
-        self.err_ewm.setdefault(act, stats.EWMean(fading_factor=0.95))
+        self.detectors.setdefault(act, ADWIN(min_window_length=10, delta=0.05))
         self.buffers.setdefault(act, deque(maxlen=1000))
+        self.err_window.setdefault(act, deque(maxlen=10))
+
         self.min_et.setdefault(act, math.inf)
         self.max_et.setdefault(act, -math.inf)
 
@@ -148,28 +154,38 @@ class ExcutionTimeModule:
         false_hours = count_false_hours(cal, start_ts, end_ts)
         y = max((end_ts - start_ts).total_seconds() / 60.0 - false_hours * 60.0, 0.0)
         
-        err   = abs(y - y_hat)
-        self.err_ewm[act].update(err)
-        scale = self.err_ewm[act].get() or 1.0
-        x = min(err / scale, 10.0) / 10.0  # 0..1
-        self.detectors[act].update(x)
+        self.buffers[act].append((X.copy(), y))
 
-        if self.detectors[act].drift_detected:
+        err   = abs(y - y_hat)
+        self.err_window[act].append(err)
+        win_mae = sum(self.err_window[act]) / len(self.err_window[act])
+        self.detectors[act].update(err)
+
+        error_flag = False
+        if len(self.err_window[act]) == self.err_window[act].maxlen and win_mae > 240:
+            error_flag = True
+        if self.detectors[act].drift_detected or error_flag:
             self.rebuilding_time += 1
-            # print(f"Rebuliding Execution Time Module for act: {act} at {start_ts}")
+            if self.detectors[act].drift_detected:
+                # print(f"Drift")
+                width = min(int(self.detectors[act].width), len(self.err_window[act]))
+                recent = list(self.buffers[act])[-width:]
+                self.detectors[act] = ADWIN(min_window_length=10, delta=0.05)
+            else:
+                # print(f"ERROR")
+                recent = [self.buffers[act][-1]]
+            self.err_window[act].clear()
+            print(f"Rebuliding Execution Time Module for act: {act} at {start_ts}")
             new_model = tree.HoeffdingAdaptiveTreeRegressor(
                 max_depth=5, leaf_prediction="mean", grace_period=self.grace_period, seed=72)
-            for Xb, yb in self.buffers[act]:
+            for Xb, yb in recent:
                 new_model.learn_one(Xb, yb)
             self.excution_time_distrib[act] = new_model
-            self.detectors[act] = ADWIN(min_window_length=200, delta=0.01)
         else:
             self.excution_time_distrib[act].learn_one(X, y)
 
         self.min_et[act] = min(self.min_et[act], y)
         self.max_et[act] = max(self.max_et[act], y)
-
-        self.buffers[act].append((X.copy(), y))
         
         
 

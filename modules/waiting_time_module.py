@@ -13,11 +13,12 @@ def build_training_df_wt(log: pd.DataFrame, res_calendars: dict) -> dict:
 
     resources = list(res_calendars.keys())
 
-    dict_df_per_res = {
-                    res: {'hour': [], 'weekday': [], 'n. running events': [], 'waiting_time': []} |
-                         {'n. running events': [], 'waiting_time': []} 
-                    for res in resources
-                    }
+    dict_df_per_res = {res: {'hour': [],
+                            'weekday': [],
+                            'n. running events': [],
+                            'waiting_time': [],
+                                                }
+                       for res in resources}
 
     for _, events in log.groupby(CASE_ID_KEY):
         events = events.sort_values([START_TIME_KEY, END_TIME_KEY], kind="mergesort").reset_index(drop=True)
@@ -46,11 +47,11 @@ class WaitingTimeModule:
         self.grace_period = grace_period
         self.resource_calendars = resource_calendars
         self.waiting_time_distrib, self.min_wt, self.max_wt = self.discover_waiting_time_time_distrib(initial_log, grace_period)
-        self.detectors = {res: ADWIN(min_window_length=200) for res in self.resource_calendars.keys()}
-        self.err_ewm   = {res: stats.EWMean(fading_factor=0.95) for res in self.resource_calendars.keys()}
+        self.detectors = {res: ADWIN(min_window_length=10, delta=0.05) for res in self.resource_calendars.keys()}
 
         self.buffers   = {res: deque(maxlen=1000) for res in self.resource_calendars.keys()}
         self.active_intervals = {res: deque(maxlen=1000) for res in self.resource_calendars.keys()}
+        self.err_window = {res: deque(maxlen=10) for res in self.resource_calendars.keys()}
 
         self.rebuilding_time = 0
 
@@ -99,17 +100,17 @@ class WaitingTimeModule:
                 leaf_prediction="mean", max_depth=5, grace_period=self.grace_period, seed=72
             )
         if res not in self.detectors:
-            self.detectors[res] = ADWIN(min_window_length=200, delta=0.01)
-        if res not in self.err_ewm:
-            self.err_ewm[res] = stats.EWMean(fading_factor=0.95)
+            self.detectors[res] = ADWIN(min_window_length=10, delta=0.05)
         if res not in self.buffers:
             self.buffers[res] = deque(maxlen=1000)
         if res not in self.active_intervals:
-            self.active_intervals[res] = deque(maxlen=10000)
+            self.active_intervals[res] = deque(maxlen=1000)
         if res not in self.min_wt:
             self.min_wt[res] = math.inf
         if res not in self.max_wt:
             self.max_wt[res] = -math.inf
+        if res not in self.err_window:
+            self.err_window[res] = deque(maxlen=10)
 
         if len(trace)>1: # at least two event
             events = trace.sort_values([START_TIME_KEY, END_TIME_KEY], kind="mergesort").reset_index(drop=True)
@@ -136,25 +137,6 @@ class WaitingTimeModule:
             off_duty_h = count_false_hours(cal_res, prev_ts, start_ts)  # 返回小时数
             y = max((start_ts - prev_ts).total_seconds()/60.0 - off_duty_h*60.0, 0.0)
 
-            err   = abs(y - y_hat)
-            
-            self.err_ewm[res].update(err)
-            scale = self.err_ewm[res].get() or 1.0
-            x = min(err / max(scale, 1e-6), 10.0) / 10.0
-            self.detectors[res].update(x)
-
-            if self.detectors[res].drift_detected:
-                self.rebuilding_time += 1
-                # print(f"Rebuliding Waiting Time Module for res: {res} at {start_ts}")
-                new_model = tree.HoeffdingAdaptiveTreeRegressor(leaf_prediction="mean", max_depth=5, seed=72, grace_period=self.grace_period)
-                for Xb, yb in self.buffers[res]:
-                    new_model.learn_one(Xb, yb)
-                self.waiting_time_distrib[res] = new_model
-                self.detectors[res] = ADWIN(min_window_length=200, delta=0.01)
-            else:
-                # 正常增量学习
-                self.waiting_time_distrib[res].learn_one(X, y)
-
             # 维护 min/max
             self.min_wt[res] = min(self.min_wt[res], y)
             self.max_wt[res] = max(self.max_wt[res], y)
@@ -162,4 +144,35 @@ class WaitingTimeModule:
             # 近窗样本缓冲
             self.buffers[res].append((X.copy(), y))
             self.active_intervals[res].append((start_ts, end_ts))
+
+            err   = abs(y - y_hat)
+            
+            self.err_window[res].append(err)
+            win_mae = sum(self.err_window[res]) / len(self.err_window[res])
+            self.detectors[res].update(err)
+
+            error_flag = False
+            if len(self.err_window[res]) == self.err_window[res].maxlen and win_mae > 240:
+                error_flag = True
+
+            if self.detectors[res].drift_detected or error_flag:
+                self.rebuilding_time += 1
+                if self.detectors[res].drift_detected:
+                    # print(f"Drift")
+                    width = min(int(self.detectors[res].width), len(self.err_window[res]))
+                    recent = list(self.buffers[res])[-width:]
+                    self.detectors[res] = ADWIN(min_window_length=10, delta=0.05)
+                else:
+                    # print(f"ERROR")
+                    recent = [self.buffers[res][-1]]
+                self.err_window[res].clear()
+                # print(f"Rebuliding Waiting Time Module for res: {res} at {start_ts}")
+                new_model = tree.HoeffdingAdaptiveTreeRegressor(leaf_prediction="mean", max_depth=5, seed=72, grace_period=self.grace_period)
+                for Xb, yb in recent:
+                    new_model.learn_one(Xb, yb)
+                self.waiting_time_distrib[res] = new_model
+            else:
+                # 正常增量学习
+                self.waiting_time_distrib[res].learn_one(X, y)
+
                 
