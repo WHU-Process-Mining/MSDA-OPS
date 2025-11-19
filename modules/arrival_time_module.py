@@ -179,7 +179,7 @@ class ArrivalTimeModule:
             if len(self.err_window) == self.err_window.maxlen and win_mae > 240:
                 error_flag = True
             if self.detector.drift_detected or error_flag:
-                print(f"Update Arrival Time Model at {real_trace_time}")
+                # print(f"Update Arrival Time Model at {real_trace_time}")
                 self.update_num += 1
                 if self.detector.drift_detected:
                     # print(f"Drift")

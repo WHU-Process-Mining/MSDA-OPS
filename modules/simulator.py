@@ -97,21 +97,25 @@ class Simulator:
         self.waiting_time_model.update(trace, self.resource_model.resource_calendar)
     
 
-    def _generate_activity_trace(self,):
+    def _generate_activity_trace(self, max_steps: int = 500):
         """ Generate Activity Traces """
-
         activity_trace = []
-
         while len(activity_trace)==0:
+            
+            steps = 0
             tkns = list(self.process_model.im)
+
             t_fired, tkns = self.process_model.get_next_transition(tkns, activity_trace)
             if t_fired.label:
                 activity_trace.append(t_fired.label)
-
-            while set(tkns) != set(self.process_model.fm):
+            steps += 1
+            while set(tkns) != set(self.process_model.fm) and steps < max_steps:
                 t_fired, tkns = self.process_model.get_next_transition(tkns, activity_trace)
                 if t_fired.label:
                     activity_trace.append(t_fired.label)
+                steps += 1
+            if set(tkns) != set(self.process_model.fm): # not to end point, rerun
+                activity_trace = []
         
         return activity_trace
     

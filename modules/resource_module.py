@@ -143,6 +143,7 @@ class ResourceModule:
         for t in (start_ts, end_ts):
             in_duty = is_on_duty(self.resource_calendar, res, t)
             if not in_duty:
+                self.calendar_rebuilt_time += 1
                 self.resource_calendar[res][t.weekday()][t.hour]=True
 
         # act-> res distribution
@@ -164,12 +165,12 @@ class ResourceModule:
             self.act_res_dist_rebuilt_time += 1
             # print(f"Activity Resource Rebuilt for act: {act} at {start_ts}")
             if self.act_detectors[act].drift_detected:
-                print("Drift")
+                # print("Drift")
                 width = min(int(self.act_detectors[act].width), len(self.err_window[act]))
                 recent = list(self.act_buffers[act])[-width:]
                 self.act_detectors[act] = ADWIN(min_window_length=10, delta=0.05)
             else:
-                print("Error")
+                # print("Error")
                 recent = [self.act_buffers[act][-1]]
             self.err_window[act].clear()
             cnt = Counter(recent)

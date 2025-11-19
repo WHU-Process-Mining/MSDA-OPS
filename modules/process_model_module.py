@@ -6,7 +6,6 @@ from pm4py.objects.petri_net.obj import PetriNet, Marking
 from pm4py.algo.conformance.alignments.petri_net import algorithm as alignments
 from pm4py.algo.evaluation.replay_fitness import algorithm as replay_fitness
 from collections import deque, defaultdict
-from river.drift import ADWIN
 from river.tree.hoeffding_adaptive_tree_classifier import HoeffdingAdaptiveTreeClassifier
 from modules.simulator import CASE_ID_KEY, ACTIVITY_KEY, START_TIME_KEY, END_TIME_KEY
 
@@ -257,7 +256,7 @@ class ProcessModelModule:
                 ys = [y for _, y in self.t_buffers[t]]
                 if ys.count(1) >= self.min_pos_neg and ys.count(0) >= self.min_pos_neg: # sample enough
                     # new desicion tree built
-                    print(f"Build Decision Tree new transition: {t} at {trace.iloc[-1][START_TIME_KEY]}")
+                    # print(f"Build Decision Tree new transition: {t} at {trace.iloc[-1][START_TIME_KEY]}")
                     self.dt_new_build_time += 1
                     clf = HoeffdingAdaptiveTreeClassifier(seed=72,
                         leaf_prediction="mc", max_depth=max_depth, grace_period=self.grace_period
@@ -289,7 +288,7 @@ class ProcessModelModule:
         trace_fitness = float(diag["average_trace_fitness"])   # ∈[0,1]
 
         if trace_fitness < 0.8 and len(self.complete_traces)> 10:
-            print(f"Update Process Model at {complete_trace.iloc[-1][END_TIME_KEY]}")
+            # print(f"Update Process Model at {complete_trace.iloc[-1][END_TIME_KEY]}")
             self.net_update_time += 1
             log = pd.concat(self.complete_traces, ignore_index=True)
             self.net, self.im, self.fm = pm4py.discover_petri_net_inductive(log,

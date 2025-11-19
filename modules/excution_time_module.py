@@ -178,7 +178,7 @@ class ExcutionTimeModule:
                 # print(f"ERROR")
                 recent = [self.buffers[act][-1]]
             self.err_window[act].clear()
-            print(f"Rebuliding Execution Time Module for act: {act} at {start_ts}")
+            # print(f"Rebuliding Execution Time Module for act: {act} at {start_ts}")
             new_model = tree.HoeffdingAdaptiveTreeRegressor(
                 max_depth=5, leaf_prediction="mean", grace_period=self.grace_period, seed=72)
             for Xb, yb in recent:
