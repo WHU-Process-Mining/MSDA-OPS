@@ -2,8 +2,6 @@ import pandas as pd
 from tqdm import tqdm
 from river import tree
 from collections import deque
-from river import stats
-import math
 from river.drift import ADWIN
 
 from modules.simulator import CASE_ID_KEY, RESOURCE_KEY, START_TIME_KEY, END_TIME_KEY

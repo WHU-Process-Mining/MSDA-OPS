@@ -29,11 +29,10 @@ class ResourceModule:
         self.resource_calendar = self.discover_res_calendars(initial_log)
         self.act_resource_dist = self.discover_act_resource_dist(initial_log)
         activities = initial_log[ACTIVITY_KEY].unique()
-        self.res_buffers = {res: deque(maxlen=1000) for res in self.resources}
-        self.act_buffers = {act: deque(maxlen=1000) for act in activities}
-        self.cal_detectors = {res: ADWIN(min_window_length=200, delta=0.01) for res in self.resources} # 资源日历的检测
-        self.act_detectors = {act: ADWIN(min_window_length=200, delta=0.01) for act in activities} # 活动分配资源的检测
+        self.act_buffers = {act: deque(maxlen=100) for act in activities}
+        self.act_detectors = {act: ADWIN(min_window_length=10, delta=0.05) for act in activities} # 活动分配资源的检测
         self.act_res_counts = {act: Counter() for act in activities}
+        self.err_window = {act: deque(maxlen=10) for act in activities}
         for act, dist in self.act_resource_dist.items():
             for r, p in dist.items():
                 self.act_res_counts[act][r] += max(p, 1e-4)*100
@@ -127,18 +126,16 @@ class ResourceModule:
         end_ts = event[END_TIME_KEY]
 
         if act not in self.act_detectors:
-            self.act_detectors[act] = ADWIN(min_window_length=200, delta=0.01)
+            self.act_detectors[act] = ADWIN(min_window_length=10, delta=0.05)
         if act not in self.act_res_counts:
             self.act_res_counts[act] = Counter()
         if act not in self.act_buffers:
-            self.act_buffers[act] = deque(maxlen=1000)
-        
+            self.act_buffers[act] = deque(maxlen=100)
+        if act not in self.err_window:
+            self.err_window[act] = deque(maxlen=10)
+
         if res not in self.resource_calendar:
             self.resource_calendar[res] = self._default_calendar()
-        if res not in self.cal_detectors:
-            self.cal_detectors[res] = ADWIN(min_window_length=200, delta=0.01)
-        if res not in self.res_buffers:
-            self.res_buffers[res] = deque(maxlen=1000)
         if res not in self.resources:
             self.resources.append(res)
         
@@ -152,18 +149,32 @@ class ResourceModule:
         dist_a = self.act_resource_dist.get(act, {})
         p = dist_a.get(res, 1e-6)
         s = -math.log(p)
-        x = min(s / 14.0, 1.0)
+        x = min(s / 14.0, 1.0) # surprise at 1
         self.act_detectors[act].update(x)
         self.act_buffers[act].append(res)
 
-        if self.act_detectors[act].drift_detected:
+        self.err_window[act].append(x)
+        win_supr = sum(self.err_window[act]) / len(self.err_window[act])
+
+        error_flag = False
+        if len(self.err_window[act]) == self.err_window[act].maxlen and win_supr > 0.9:
+            error_flag = True
+
+        if self.act_detectors[act].drift_detected or error_flag:
             self.act_res_dist_rebuilt_time += 1
             # print(f"Activity Resource Rebuilt for act: {act} at {start_ts}")
-            recent = list(self.act_buffers[act])
+            if self.act_detectors[act].drift_detected:
+                print("Drift")
+                width = min(int(self.act_detectors[act].width), len(self.err_window[act]))
+                recent = list(self.act_buffers[act])[-width:]
+                self.act_detectors[act] = ADWIN(min_window_length=10, delta=0.05)
+            else:
+                print("Error")
+                recent = [self.act_buffers[act][-1]]
+            self.err_window[act].clear()
             cnt = Counter(recent)
             self.act_res_counts[act] = cnt
             self.act_resource_dist[act] = normalize_dist(cnt)
-            self.act_detectors[act] = ADWIN(min_window_length=200, delta=0.01)
         else:
             # decay the count
             for k in list(self.act_res_counts[act].keys()):
