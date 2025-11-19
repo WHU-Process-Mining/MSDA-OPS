@@ -110,6 +110,7 @@ class ExcutionTimeModule:
         
         execution_time = self.excution_time_distrib[activity].predict_one({'resource = '+res: (res == resource)*1 for res in self.resource_calendars.keys()} | 
                                                                                     historical_active_act |{'hour': timestamp.hour, 'weekday': timestamp.weekday()})
+        execution_time = max(self.min_et[activity], min(execution_time, self.max_et[activity]))
         return execution_time
     
     def update(self, trace: pd.DataFrame, resource_calendars):
@@ -155,6 +156,8 @@ class ExcutionTimeModule:
         y = max((end_ts - start_ts).total_seconds() / 60.0 - false_hours * 60.0, 0.0)
         
         self.buffers[act].append((X.copy(), y))
+        self.min_et[act] = min(self.min_et[act], y)
+        self.max_et[act] = max(self.max_et[act], y)
 
         err   = abs(y - y_hat)
         self.err_window[act].append(err)

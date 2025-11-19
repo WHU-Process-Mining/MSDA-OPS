@@ -86,6 +86,7 @@ class WaitingTimeModule:
         waiting_time = self.waiting_time_distrib[resource].predict_one({'hour': cur_ts.hour, 
                                                                             'weekday': cur_ts.weekday(), 
                                                                             'n. running events': running_event_num})
+        waiting_time = max(self.min_wt[resource], min(waiting_time, self.max_wt[resource]))
         return waiting_time
     
     def update(self, trace: pd.DataFrame, resource_calendars: dict):
