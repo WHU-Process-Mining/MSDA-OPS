@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 from tqdm import tqdm
 import random
 import pm4py
@@ -6,8 +7,44 @@ from pm4py.objects.petri_net.obj import PetriNet, Marking
 from pm4py.algo.conformance.alignments.petri_net import algorithm as alignments
 from pm4py.algo.evaluation.replay_fitness import algorithm as replay_fitness
 from collections import deque, defaultdict
+from river.drift import ADWIN
 from river.tree.hoeffding_adaptive_tree_classifier import HoeffdingAdaptiveTreeClassifier
+from river.tree.hoeffding_tree_classifier import HoeffdingTreeClassifier
+from sklearn.tree import DecisionTreeClassifier
 from modules.simulator import CASE_ID_KEY, ACTIVITY_KEY, START_TIME_KEY, END_TIME_KEY
+from utils.rule_utils import DecisionRules
+
+def return_true_alignments(log: pd.DataFrame, net: PetriNet, initial_marking: Marking, final_marking: Marking):
+    re_log = log.rename(columns={CASE_ID_KEY: 'case:concept:name',
+                                ACTIVITY_KEY: 'concept:name',
+                                END_TIME_KEY: 'time:timestamp'}).sort_values(['case:concept:name', 'time:timestamp'])
+    params = {"ret_tuple_as_trans_desc": True, alignments.Parameters.SHOW_PROGRESS_BAR: False}
+    alignments_ = alignments.apply_log(re_log, net, initial_marking, final_marking, parameters=params)
+    groups = list(re_log.groupby('case:concept:name'))
+    trace_aligned_prefixs = []
+    for (case_id, trace_df), ali in zip(groups, alignments_):
+        steps = ali['alignment']   # ((log_label, model_label), cost)
+        log_len = len(trace_df)
+        seen_log = 0
+        idx_last_log = -1
+        for idx, (mv_pair, _) in enumerate(steps):
+            log_label, model_label = mv_pair
+            if log_label != '>>':
+                seen_log += 1
+                idx_last_log = idx
+                if seen_log == log_len:
+                    break
+
+        if idx_last_log == -1: # not alignment trace
+            continue
+
+        prefix_steps = steps[:idx_last_log + 1]
+        # delete model move
+        trace_aligned_prefix = [mv_pair for (mv_pair, _) in prefix_steps if mv_pair[1] != '>>']
+        trace_aligned_prefixs.append(trace_aligned_prefix)
+
+    return trace_aligned_prefixs
+
 
 def compute_transition_weights_from_model(models_t: dict, dict_x: dict) -> dict:
     transition_weights = dict()
@@ -15,10 +52,18 @@ def compute_transition_weights_from_model(models_t: dict, dict_x: dict) -> dict:
     for t in list_transitions:
         if isinstance(models_t[t], HoeffdingAdaptiveTreeClassifier):
             transition_weights[t] = models_t[t].predict_proba_one(dict_x)[1]
+        elif isinstance(models_t[t], HoeffdingTreeClassifier):
+            transition_weights[t] = models_t[t].predict_proba_one(dict_x)[1]
+        elif isinstance(models_t[t], DecisionTreeClassifier):
+            # feat_names = sorted(dict_x.keys())
+            x_vec = [[dict_x.get(f, 0.0) for f in dict_x.keys()]]
+            transition_weights[t] = models_t[t].predict_proba(x_vec)[0][1]
+        elif type(models_t[t]) == DecisionRules:
+            transition_weights[t] = models_t[t].apply(dict_x)
         elif models_t[t]:
             transition_weights[t] = models_t[t]
         else: # no sample
-            transition_weights[t] = 0.0
+            transition_weights[t] = 1
         
     return transition_weights
 
@@ -94,8 +139,8 @@ def build_training_datasets(
         net: PetriNet, 
         initial_marking: Marking, 
         final_marking: Marking,
-        k_last: int=5,
-        neg_num: int=3) -> dict:
+        k_last: int=0,
+        neg_num: int=0) -> dict:
 
     net_transition_labels = list(set([t.label for t in net.transitions if t.label]))
     net_transition_labels = sorted(net_transition_labels)
@@ -108,14 +153,9 @@ def build_training_datasets(
         return d
     t_dicts_dataset = {t: _feature_dict() for t in net.transitions}
 
-    re_log = log.rename(columns={CASE_ID_KEY: 'case:concept:name',
-                                ACTIVITY_KEY: 'concept:name',
-                                END_TIME_KEY: 'time:timestamp'})
-    alignments_ = alignments.apply_log(re_log, net, initial_marking, final_marking, parameters={"ret_tuple_as_trans_desc": True})
-    # delete model move
-    aligned_traces = [[y[0] for y in x['alignment'] if y[0][1]!='>>'] for x in alignments_]
+    trace_aligned_prefixs = return_true_alignments(log, net, initial_marking, final_marking)
     
-    for trace_aligned in aligned_traces:
+    for trace_aligned in trace_aligned_prefixs:
         visited_transitions, is_fired = return_enabled_and_fired_transitions(net, initial_marking, final_marking, trace_aligned, neg_num)
         for j in range(len(visited_transitions)):
             t = visited_transitions[j]
@@ -141,17 +181,21 @@ class ProcessModelModule:
     def __init__(self, initial_log: pd.DataFrame, completed_caseids: list, grace_period: int = 1000):
         print("Process Model Initialization...")
         self.grace_period = grace_period
-        self.min_pos_neg = 20
+        self.min_pos_neg = 1
         self.k_last = 0
         self.neg_num = 0
+        self.t_buffers = defaultdict(lambda: deque(maxlen=1000))    # t -> deque[(X_batch, y_batch)]
         initial_log_complete = initial_log[initial_log[CASE_ID_KEY].isin(completed_caseids)]
         self.net, self.im, self.fm = pm4py.discover_petri_net_inductive(initial_log_complete,
                                                               case_id_key=CASE_ID_KEY,
                                                               activity_key=ACTIVITY_KEY,
                                                               timestamp_key=END_TIME_KEY)
+        net_transition_labels = list(set([t.label for t in self.net.transitions if t.label]))
+        self.transition_labels = sorted(net_transition_labels)
         self.transition_dist = self.discover_transition_dist(initial_log, grace_period)
-        self.t_buffers = defaultdict(lambda: deque(maxlen=500))    # t -> deque[(X, y)]
-        self.complete_traces = deque(maxlen=200)
+        self.t_detectors = {t: ADWIN(min_window_length=100, delta=0.1) for t in self.net.transitions} 
+        self.err_window = {t: deque(maxlen=100) for t in self.net.transitions}
+        self.complete_traces = initial_log_complete
         self.net_update_time = 0
         self.dt_new_build_time = 0
         self.dt_update_time = 0
@@ -163,22 +207,32 @@ class ProcessModelModule:
 
         for t in tqdm(self.net.transitions):
             data_t = datasets_t[t]
-            ys = list(data_t['class'])
-            if ys.count(1) >= self.min_pos_neg and ys.count(0) >= self.min_pos_neg:
-                models_t[t] = HoeffdingAdaptiveTreeClassifier(seed=72, leaf_prediction="mc", max_depth=max_depth, grace_period=grace_period)
+            if data_t.empty:
+                self.t_buffers[t].clear()
+                models_t[t] = None
+                continue
+            
+            X_batch = [row.drop('class').to_dict() for _, row in data_t.iterrows()]
+            y_batch = data_t['class'].tolist()
 
-                for _, row in data_t.iterrows():
-                    X_row = row.drop('class').to_dict()
-                    y_row = row['class']
-                    models_t[t].learn_one(X_row, y_row)
+            self.t_buffers[t].append((X_batch, y_batch))
+
+            
+            ys = y_batch
+            if ys.count(1) >= self.min_pos_neg and ys.count(0) >= self.min_pos_neg:
+                # models_t[t] = HoeffdingTreeClassifier(leaf_prediction="mc", max_depth=max_depth, grace_period=grace_period)
+                # for _, row in data_t.iterrows():
+                #     X_row = row.drop('class').to_dict()
+                #     y_row = row['class']
+                #     models_t[t].learn_one(X_row, y_row)
+                models_t[t] = DecisionTreeClassifier(random_state=72, max_depth=max_depth)
+                X_df = pd.DataFrame(X_batch)
+                y_ser = pd.Series(y_batch, name='class')
+                models_t[t].fit(X_df.values, y_ser.values)
+                
             else:
-                pos = ys.count(1)
-                tot = len(ys)
-                if tot:
-                    prior = pos  / tot
-                    models_t[t] = prior
-                else: # no sample
-                    models_t[t] = None
+                models_t[t] = None
+            
 
         return models_t
     
@@ -205,7 +259,7 @@ class ProcessModelModule:
 
         return t_fired, state
     
-    def continue_learning(self, trace:pd.DataFrame, max_depth: int = 3):
+    def continue_learning(self, trace:pd.DataFrame, error_threshold: float = 0.8, max_depth: int = 3):
         net_transition_labels = list(set([t.label for t in self.net.transitions if t.label]))
         net_transition_labels = sorted(net_transition_labels)
         X_row = {t_l: 0 for t_l in net_transition_labels}
@@ -217,67 +271,225 @@ class ProcessModelModule:
             lp = prefix.iloc[-p][ACTIVITY_KEY] if len(prefix) >= p else None
             for l in net_transition_labels:
                 X_row[f'last{p}=={l}'] = 1 if (lp == l) else 0
-        
-        re_trace = trace.rename(columns={CASE_ID_KEY: 'case:concept:name',
-                                ACTIVITY_KEY: 'concept:name',
-                                END_TIME_KEY: 'time:timestamp'})
-        
-        alignments_ = alignments.apply_log(re_trace, self.net, self.im, self.fm, parameters={"ret_tuple_as_trans_desc": True})
-        # delete model move
-        aligned_trace = [y[0] for y in alignments_[0]['alignment'] if y[0][1]!='>>'] 
-        
+
+        aligned_trace = return_true_alignments(trace, self.net, self.im, self.fm)
+        if not aligned_trace:
+            return
+        aligned_trace = aligned_trace[0]
         
         visited_transitions, is_fired = return_enabled_and_fired_transitions(self.net, self.im, self.fm, aligned_trace, self.neg_num)
         
-        t_target = trace.iloc[-1][ACTIVITY_KEY]
-        cand_curr = [i for i,(t,f) in enumerate(zip(visited_transitions, is_fired)) if f==1 and t.label==t_target]
-        if not cand_curr: # new act
-            return
-        j_curr = cand_curr[-1]
-        prev_vis = [i for i,(t,f) in enumerate(zip(visited_transitions, is_fired)) if i<j_curr and f==1 and t.label]
-        j_prev = prev_vis[-1] if prev_vis else -1
 
-        start_idx = j_prev + 1
-        end_idx   = j_curr + 1     
+        j_vis = [i for i,(t,f) in enumerate(zip(visited_transitions, is_fired)) if f==1 and t.label]
+
+        j_prev = j_vis[-2] if len(j_vis)>1 else -1 
         
-        t_dicts_dataset = {t: {'feature':[], 'class': []} for t in self.net.transitions}
-        
-        for j in range(start_idx, end_idx):
+        batch_X = {t: [] for t in self.net.transitions}
+        batch_y = {t: [] for t in self.net.transitions}
+
+        for j in range(j_prev + 1, len(visited_transitions)):
             t = visited_transitions[j]
-            t_fired = is_fired[j]
-            t_dicts_dataset[t]['feature'].append(X_row.copy())
-            t_dicts_dataset[t]['class'].append(t_fired)
-        
-        for t, dict_t in t_dicts_dataset.items():
+            y = is_fired[j]
+            # 这里所有样本共享同一个 X_row（你的设定），但 y 不同
+            batch_X[t].append(X_row.copy())
+            batch_y[t].append(y)
+
+        # 5) 把这一批样本放进 buffer，并且只在“之前没树、样本数够”的时候补一棵树
+        for t in self.net.transitions:
+            X_b = batch_X[t]
+            y_b = batch_y[t]
+            if not X_b:
+                continue
+
+            self.t_buffers[t].append((X_b, y_b))
+
             clf = self.transition_dist.get(t)
-            if not isinstance(clf, HoeffdingAdaptiveTreeClassifier):
-                for X, y in zip(dict_t['feature'], dict_t['class']):
-                    self.t_buffers[t].append((X, y))
-                ys = [y for _, y in self.t_buffers[t]]
+            if not isinstance(clf, DecisionTreeClassifier):
+                buf = list(self.t_buffers[t])
+                all_X = [x for X_batch, _ in buf for x in X_batch]
+                all_y = [y for _, y_batch in buf for y in y_batch]
+                ys = all_y
                 if ys.count(1) >= self.min_pos_neg and ys.count(0) >= self.min_pos_neg: # sample enough
                     # new desicion tree built
                     # print(f"Build Decision Tree new transition: {t} at {trace.iloc[-1][START_TIME_KEY]}")
                     self.dt_new_build_time += 1
-                    clf = HoeffdingAdaptiveTreeClassifier(seed=72,
-                        leaf_prediction="mc", max_depth=max_depth, grace_period=self.grace_period
-                    )
-                    for Xb, yb in self.t_buffers[t]:
-                        clf.learn_one(Xb, yb)
-                    self.transition_dist[t] = clf
+                    new_clf = DecisionTreeClassifier(random_state=72, max_depth=max_depth)
+                    X_buf = pd.DataFrame(all_X)
+                    y_buf = pd.Series(all_y, name="class")
+                    new_clf.fit(X_buf.values, y_buf.values)
+                    self.transition_dist[t] = new_clf
                 else: # sample not enough
-                    pos = sum(1 for _, y in self.t_buffers[t] if y == 1)
-                    tot = len(self.t_buffers[t])
-                    if tot:
-                        prior = pos  / tot
-                        self.transition_dist[t] = prior  
+                    self.transition_dist[t] = None
+                    # pos = sum(ys)
+                    # tot = len(ys)
+                    # if tot:
+                    #     prior = pos / tot
+                    #     self.transition_dist[t] = prior
+                    # pos = sum(1 for _, y in self.t_buffers[t] if y == 1)
+                    # tot = len(self.t_buffers[t])
+                    # if tot:
+                    #     prior = pos  / tot
+                    #     self.transition_dist[t] = prior
+                    # self.transition_dist[t]
+                    
             else:
-                # continue learning
-                for X, y in zip(dict_t['feature'], dict_t['class']):
-                    self.t_buffers[t].append((X, y))
-                    clf.learn_one(X, y)
+                # Drift detector
+                X_new = pd.DataFrame(X_b)
+                y_new = y_b
 
-    def update(self, complete_trace):
-        self.complete_traces.append(complete_trace)
+                classes = list(clf.classes_)
+                if len(classes) == 1:
+                    # 只有一个类别的退化情况
+                    if classes[0] == 1:
+                        proba = np.ones(len(X_new))
+                    else:
+                        proba = np.zeros(len(X_new))
+                else:
+                    proba = clf.predict_proba(X_new.values)[:, 1]
+
+                errors = [abs(y_true - p_hat) for y_true, p_hat in zip(y_new, proba)]
+                batch_mae = sum(errors) / len(errors)
+                
+                self.t_detectors[t].update(batch_mae)
+                self.err_window[t].append(batch_mae)
+
+                win_mae = sum(self.err_window[t]) / len(self.err_window[t])
+
+                error_flag = False
+                if len(self.err_window[t]) == self.err_window[t].maxlen and win_mae > error_threshold:
+                    error_flag = True
+
+                if (self.t_detectors[t].drift_detected or error_flag):
+                    if self.t_detectors[t].drift_detected:
+                        # print("Drift")
+                        width = min(len(self.t_buffers[t]), int(self.t_detectors[t].width))
+                        # buf = list(self.t_buffers[t])[-width:]
+                        buf = list(self.t_buffers[t])[-width:]
+                    else:
+                        # print("Error")
+                        buf = list(self.t_buffers[t])[-self.err_window[t].maxlen:]
+                        # buf = list(self.t_buffers[t])
+
+                    all_X = [x for X_batch, _ in buf for x in X_batch]
+                    all_y = [y for _, y_batch in buf for y in y_batch]
+
+                    ys = all_y
+                    if ys.count(1) >= self.min_pos_neg and ys.count(0) >= self.min_pos_neg:
+                        self.dt_update_time += 1
+                        # print(f"Decision Tree re-built for transition: {t} at {trace.iloc[-1][START_TIME_KEY]}")
+                        new_clf = DecisionTreeClassifier(random_state=72, max_depth=max_depth)
+
+                        X_df_all = pd.DataFrame(all_X)
+                        y_ser_all = pd.Series(all_y, name="class")
+                        new_clf.fit(X_df_all.values, y_ser_all.values)
+                        self.transition_dist[t] = new_clf
+                        self.t_detectors[t] = ADWIN(min_window_length=100, delta=0.01)
+                
+                    # else:
+                    #     buf_global = list(self.t_buffers[t])
+                    #     y_global = [y for _, y_batch in buf_global for y in y_batch]
+                    #     prior = sum(y_global) / len(y_global)
+                    #     self.transition_dist[t] = prior
+                    self.err_window[t].clear()
+    
+    # def continue_learning_by_trace(self, trace:pd.DataFrame, max_depth: int = 3):
+        
+    #     datasets_t = build_training_datasets(trace, self.net, self.im, self.fm, self.k_last, self.neg_num)
+
+    #     for t in self.net.transitions:
+    #         data_t = datasets_t[t]
+    #         if data_t.empty:
+    #             continue
+            
+    #         X_batch = [row.drop('class').to_dict() for _, row in data_t.iterrows()]
+    #         y_batch = data_t['class'].tolist()
+
+    #         self.t_buffers[t].append((X_batch, y_batch))
+
+    #         clf = self.transition_dist.get(t)
+    #         if not isinstance(clf, DecisionTreeClassifier):
+
+    #             buf = list(self.t_buffers[t])
+    #             all_X = [x for X_batch, _ in buf for x in X_batch]
+    #             all_y = [y for _, y_batch in buf for y in y_batch]
+    #             ys = all_y
+    #             if ys.count(1) >= self.min_pos_neg and ys.count(0) >= self.min_pos_neg:
+    #                 # new desicion tree built
+    #                 print(f"Build Decision Tree new transition: {t} at {trace.iloc[-1][START_TIME_KEY]}")
+    #                 self.dt_new_build_time += 1
+    #                 new_clf = DecisionTreeClassifier(random_state=72, max_depth=max_depth)
+    #                 X_buf = pd.DataFrame(all_X)
+    #                 y_buf = pd.Series(all_y, name="class")
+    #                 new_clf.fit(X_buf.values, y_buf.values)
+    #                 self.transition_dist[t] = new_clf
+    #             else: # sample not enough
+    #                 pos = sum(ys)
+    #                 tot = len(ys)
+    #                 if tot:
+    #                     prior = pos  / tot
+    #                     self.transition_dist[t] = prior
+                
+    #         else:
+    #             X_new = pd.DataFrame(X_batch)
+    #             y_new = y_batch
+
+    #             classes = list(clf.classes_)
+    #             if len(classes) == 1:
+    #                 # 只有一个类别的退化情况
+    #                 if classes[0] == 1:
+    #                     proba = np.ones(len(X_new))
+    #                 else:
+    #                     proba = np.zeros(len(X_new))
+    #             else:
+    #                 proba = clf.predict_proba(X_new.values)[:, 1]
+
+    #             errors = [abs(y_true - p_hat) for y_true, p_hat in zip(y_new, proba)]
+    #             batch_mae = sum(errors) / len(errors)
+                
+    #             self.t_detectors[t].update(batch_mae)
+    #             self.err_window[t].append(batch_mae)
+
+    #             win_mae = sum(self.err_window[t]) / len(self.err_window[t])
+
+    #             error_flag = False
+    #             if len(self.err_window[t]) == self.err_window[t].maxlen and win_mae > 0.9:
+    #                 error_flag = True
+
+    #             if (self.t_detectors[t].drift_detected or error_flag):
+    #                 if self.t_detectors[t].drift_detected:
+    #                     # print("Drift")
+    #                     width = min(len(self.t_buffers[t]), int(self.t_detectors[t].width))
+    #                     buf_new = list(self.t_buffers[t])[-width:]
+    #                     # buf = list(self.t_buffers[t])[-30:]
+    #                 else:
+    #                     # print("Error")
+    #                     buf_new = list(self.t_buffers[t])[-self.err_window[t].maxlen:]
+    #                     # buf = list(self.t_buffers[t])
+
+    #                 X_new = [x for X_batch, _ in buf_new for x in X_batch]
+    #                 y_new = [y for _, y_batch in buf_new for y in y_batch]
+
+    #                 ys = y_new
+    #                 if ys.count(1) >= self.min_pos_neg and ys.count(0) >= self.min_pos_neg:
+    #                     self.dt_update_time += 1
+    #                     # print(f"Decision Tree re-built for transition: {t} at {trace.iloc[-1][START_TIME_KEY]}")
+    #                     new_clf = DecisionTreeClassifier(random_state=72, max_depth=max_depth)
+
+    #                     X_df_new = pd.DataFrame(X_new)
+    #                     y_ser_new = pd.Series(y_new, name="class")
+    #                     new_clf.fit(X_df_new.values, y_ser_new.values)
+    #                     self.transition_dist[t] = new_clf
+    #                     self.t_detectors[t] = ADWIN(min_window_length=100, delta=0.1)
+                
+    #                 else:
+    #                     buf_global = list(self.t_buffers[t])
+    #                     y_global = [y for _, y_batch in buf_global for y in y_batch]
+    #                     prior = sum(y_global) / len(y_global)
+    #                     self.transition_dist[t] = prior
+    #                 self.err_window[t].clear()
+
+    def update(self, complete_trace: pd.DataFrame, fitness_threshold: float = 0.8):
+        self.complete_traces = pd.concat([self.complete_traces,complete_trace], ignore_index=True)
         df = complete_trace.rename(columns={
             CASE_ID_KEY: 'case:concept:name',
             ACTIVITY_KEY: 'concept:name',
@@ -287,17 +499,22 @@ class ProcessModelModule:
                             variant=replay_fitness.Variants.ALIGNMENT_BASED)
         trace_fitness = float(diag["average_trace_fitness"])   # ∈[0,1]
 
-        if trace_fitness < 0.8 and len(self.complete_traces)> 10:
+        if trace_fitness < fitness_threshold:
             # print(f"Update Process Model at {complete_trace.iloc[-1][END_TIME_KEY]}")
             self.net_update_time += 1
-            log = pd.concat(self.complete_traces, ignore_index=True)
+            log = self.complete_traces
             self.net, self.im, self.fm = pm4py.discover_petri_net_inductive(log,
                                                               case_id_key=CASE_ID_KEY,
                                                               activity_key=ACTIVITY_KEY,
                                                               timestamp_key=END_TIME_KEY)
-            self.transition_dist = self.discover_transition_dist(log, self.grace_period)
-
             self.t_buffers.clear()
+            self.transition_dist = self.discover_transition_dist(log, self.grace_period)
+            net_transition_labels = list(set([t.label for t in self.net.transitions if t.label]))
+            self.transition_labels = sorted(net_transition_labels)
+            self.transition_dist = self.discover_transition_dist(log, self.grace_period)
+            self.t_detectors = {t: ADWIN(min_window_length=10, delta=0.01) for t in self.net.transitions} 
+            self.err_window = {t: deque(maxlen=20) for t in self.net.transitions}
+
 
         
 
