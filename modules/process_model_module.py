@@ -21,25 +21,32 @@ def return_true_alignments(log: pd.DataFrame, net: PetriNet, initial_marking: Ma
     params = {"ret_tuple_as_trans_desc": True, alignments.Parameters.SHOW_PROGRESS_BAR: False}
     alignments_ = alignments.apply_log(re_log, net, initial_marking, final_marking, parameters=params)
     groups = list(re_log.groupby('case:concept:name'))
+    
     trace_aligned_prefixs = []
+    complete_steps = []
+    pre_steps = []
     for (case_id, trace_df), ali in zip(groups, alignments_):
         steps = ali['alignment']   # ((log_label, model_label), cost)
         log_len = len(trace_df)
-        seen_log = 0
-        idx_last_log = -1
-        for idx, (mv_pair, _) in enumerate(steps):
-            log_label, model_label = mv_pair
-            if log_label != '>>':
-                seen_log += 1
-                idx_last_log = idx
-                if seen_log == log_len:
-                    break
-
-        if idx_last_log == -1: # not alignment trace
+        is_completed = bool(trace_df['is_completed'].iloc[0])
+        if log_len == 0:
             continue
 
-        prefix_steps = steps[:idx_last_log + 1]
-        # delete model move
+        idx_last_log = -1
+        for idx, (log_pair, model_pair) in enumerate(steps):
+            log_mv = log_pair[0]
+            if log_mv != '>>':
+                idx_last_log = idx
+        if idx_last_log == -1:
+            continue
+
+        if is_completed:
+            prefix_steps = steps
+            complete_steps.append(prefix_steps)
+        else:
+            prefix_steps = steps[:idx_last_log + 1]
+            pre_steps.append(prefix_steps)
+
         trace_aligned_prefix = [mv_pair for (mv_pair, _) in prefix_steps if mv_pair[1] != '>>']
         trace_aligned_prefixs.append(trace_aligned_prefix)
 
@@ -152,10 +159,16 @@ def build_training_datasets(
         d['class'] = []
         return d
     t_dicts_dataset = {t: _feature_dict() for t in net.transitions}
+    # re_log = log.rename(columns={CASE_ID_KEY: 'case:concept:name',
+    #                             ACTIVITY_KEY: 'concept:name',
+    #                             END_TIME_KEY: 'time:timestamp'}).sort_values(['case:concept:name', 'time:timestamp'])
+    # params = {"ret_tuple_as_trans_desc": True, alignments.Parameters.SHOW_PROGRESS_BAR: False}
 
-    trace_aligned_prefixs = return_true_alignments(log, net, initial_marking, final_marking)
+    # alignments_ = alignments.apply_log(re_log, net, initial_marking, final_marking, parameters=params)
+    # aligned_traces = [[y[0] for y in x['alignment'] if y[0][1]!='>>'] for x in alignments_]
+    aligned_traces = return_true_alignments(log, net, initial_marking, final_marking)    
     
-    for trace_aligned in trace_aligned_prefixs:
+    for trace_aligned in aligned_traces:
         visited_transitions, is_fired = return_enabled_and_fired_transitions(net, initial_marking, final_marking, trace_aligned, neg_num)
         for j in range(len(visited_transitions)):
             t = visited_transitions[j]
@@ -192,6 +205,8 @@ class ProcessModelModule:
                                                               timestamp_key=END_TIME_KEY)
         net_transition_labels = list(set([t.label for t in self.net.transitions if t.label]))
         self.transition_labels = sorted(net_transition_labels)
+        initial_log = initial_log.copy()
+        initial_log["is_completed"] = initial_log[CASE_ID_KEY].isin(completed_caseids)
         self.transition_dist = self.discover_transition_dist(initial_log, grace_period)
         self.t_detectors = {t: ADWIN(min_window_length=100, delta=0.1) for t in self.net.transitions} 
         self.err_window = {t: deque(maxlen=100) for t in self.net.transitions}
@@ -228,7 +243,9 @@ class ProcessModelModule:
                 models_t[t] = DecisionTreeClassifier(random_state=72, max_depth=max_depth)
                 X_df = pd.DataFrame(X_batch)
                 y_ser = pd.Series(y_batch, name='class')
-                models_t[t].fit(X_df.values, y_ser.values)
+                X = data_t.drop(columns=['class'])
+                y = data_t['class']
+                models_t[t].fit(X.values, y.values)
                 
             else:
                 models_t[t] = None
@@ -502,15 +519,15 @@ class ProcessModelModule:
         if trace_fitness < fitness_threshold:
             # print(f"Update Process Model at {complete_trace.iloc[-1][END_TIME_KEY]}")
             self.net_update_time += 1
-            log = self.complete_traces
+            log = self.complete_traces.copy()
             self.net, self.im, self.fm = pm4py.discover_petri_net_inductive(log,
                                                               case_id_key=CASE_ID_KEY,
                                                               activity_key=ACTIVITY_KEY,
                                                               timestamp_key=END_TIME_KEY)
             self.t_buffers.clear()
-            self.transition_dist = self.discover_transition_dist(log, self.grace_period)
             net_transition_labels = list(set([t.label for t in self.net.transitions if t.label]))
             self.transition_labels = sorted(net_transition_labels)
+            log['is_completed'] = True
             self.transition_dist = self.discover_transition_dist(log, self.grace_period)
             self.t_detectors = {t: ADWIN(min_window_length=10, delta=0.01) for t in self.net.transitions} 
             self.err_window = {t: deque(maxlen=20) for t in self.net.transitions}

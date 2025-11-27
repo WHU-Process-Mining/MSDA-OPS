@@ -44,7 +44,13 @@ class Simulator:
         self.processed_events = 0
         self.current_timestamp = None
     
-    def apply_online_simulation(self, streams: pd.DataFrame, sim_num: int, update_flag: bool = True):
+    def apply_online_simulation(self, streams: pd.DataFrame, sim_num: int, parameters: dict = {}, update_flag: bool = True):
+        fitness_threshold = parameters.get('process_fitness_threshold',0.9)
+        arrival_error_threshold = parameters.get('arrival_error_threshold',240)
+        Arrival_Update_Flag = parameters.get('Arrival_Update_Flag',True)
+        Process_Update_Flag = parameters.get('Process_Update_Flag',True)
+        trace_level_num = 0
+        trace_list = []
         self.sim_num = sim_num
         counts = Counter(streams[CASE_ID_KEY])
         for _, event in tqdm(streams.iterrows(), total=len(streams)):
@@ -56,21 +62,29 @@ class Simulator:
 
                 if counts[case_id] == 0: # trace is complete
                     complete_trace = self.ongoing_trace.pop(case_id)
-                    if update_flag:
-                        self.process_model.update(complete_trace)
+                    if Process_Update_Flag and update_flag:
+                        # trace_level_num += 1
+                        # trace_list.append(complete_trace)
+                        # if trace_level_num==2:
+                        #     complete_log = pd.concat(trace_list, ignore_index=True)
+                        #     self.process_model.continue_learning_by_trace(complete_log)
+                        #     self.process_model.update(complete_log)
+                        self.process_model.update(complete_trace, fitness_threshold)
             else: # new trace
                 self.ongoing_trace[case_id] = pd.DataFrame([event])
-                initial_trace_time = self.arrival_model.get_arrival_time(event, update_flag)
+                initial_trace_time = self.arrival_model.get_arrival_time(event, arrival_error_threshold, Arrival_Update_Flag and update_flag)
                 act_trace = self._generate_activity_trace()
                 trace = self._generate_traces(act_trace, initial_trace_time, )
                 self.sim_traces.extend(trace)
                 self.case_id += 1
             if case_id in self.ongoing_trace:
-                update_trace = self.ongoing_trace[case_id]
+                update_trace = self.ongoing_trace[case_id].copy()
+                update_trace["is_completed"] = False
             else:# complete just now
-                update_trace = complete_trace
+                update_trace = complete_trace.copy()
+                update_trace["is_completed"] = True
             if update_flag:
-                self.update_event_level_model(update_trace)
+                self.update_event_level_model(update_trace, parameters)
         print("Process Parameter:")
         print(f"min_pos_neg:{self.process_model.min_pos_neg}")
         print(f"k_last:{self.process_model.k_last}")
@@ -88,16 +102,27 @@ class Simulator:
         assert self.sim_num == sim_log[CASE_ID_KEY].nunique(), "Simulation num is Wrong!"
         return sim_log
     
-    def update_event_level_model(self, trace: pd.DataFrame, update_flag: bool = True):
+    def update_event_level_model(self, trace: pd.DataFrame, parameters:dict = {}, update_flag: bool = True):
         cur_event = trace.iloc[-1]
-
-        self.process_model.continue_learning(trace)
-        self.resource_model.update_model(cur_event)
-        self.excution_time_model.update(trace, self.resource_model.resource_calendar)
-        self.waiting_time_model.update(trace, self.resource_model.resource_calendar)
+        arrival_error_threshold = parameters.get('arrival_error_threshold',240)
+        res_error_threshold = parameters.get('res_error_threshold',0.9)
+        wt_error_threshold = parameters.get('wt_error_threshold',240)
+        et_error_threshold = parameters.get('et_error_threshold',240)
+        Process_Update_Flag = parameters.get('Process_Update_Flag',True)
+        Resource_Update_Flag = parameters.get('Resource_Update_Flag',True)
+        WT_Update_Flag = parameters.get('WT_Update_Flag',True)
+        ET_Update_Flag = parameters.get('ET_Update_Flag',True)
+        if Process_Update_Flag:
+            self.process_model.continue_learning(trace, arrival_error_threshold)
+        if Resource_Update_Flag:
+            self.resource_model.update_model(cur_event, res_error_threshold)
+        if ET_Update_Flag:
+            self.excution_time_model.update(trace, self.resource_model.resource_calendar,et_error_threshold)
+        if WT_Update_Flag:
+            self.waiting_time_model.update(trace, self.resource_model.resource_calendar, wt_error_threshold)
     
 
-    def _generate_activity_trace(self, max_steps: int = 500):
+    def _generate_activity_trace(self, max_steps: int = 300):
         """ Generate Activity Traces """
         activity_trace = []
         while len(activity_trace)==0:
@@ -114,7 +139,7 @@ class Simulator:
                 if t_fired.label:
                     activity_trace.append(t_fired.label)
                 steps += 1
-            if set(tkns) != set(self.process_model.fm): # not to end point, rerun
+            if  set(tkns) != set(self.process_model.fm):
                 activity_trace = []
         
         return activity_trace

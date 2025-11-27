@@ -103,17 +103,19 @@ class ExcutionTimeModule:
     
     def get_execution_time(self, activity, resource, timestamp, historical_act: list):
         
-        historical_active_act = {l: 0 for l in self.activities}
-
-        for act in historical_act:
-            historical_active_act[act] += 1
-        
-        execution_time = self.excution_time_distrib[activity].predict_one({'resource = '+res: (res == resource)*1 for res in self.resource_calendars.keys()} | 
-                                                                                    historical_active_act |{'hour': timestamp.hour, 'weekday': timestamp.weekday()})
-        execution_time = max(self.min_et[activity], min(execution_time, self.max_et[activity]))
+        if activity in self.excution_time_distrib and resource in self.resource_calendars:
+            historical_active_act = {l: 0 for l in self.activities}
+            for act in historical_act:
+                if act in historical_active_act:
+                    historical_active_act[act] += 1
+            execution_time = self.excution_time_distrib[activity].predict_one({'resource = '+res: (res == resource)*1 for res in self.resource_calendars.keys()} | 
+                                                                                        historical_active_act |{'hour': timestamp.hour, 'weekday': timestamp.weekday()})
+            execution_time = max(self.min_et[activity], min(execution_time, self.max_et[activity]))
+        else:
+            execution_time = sum([et for _, et in self.min_et.items()])/len(self.min_et)
         return execution_time
     
-    def update(self, trace: pd.DataFrame, resource_calendars):
+    def update(self, trace: pd.DataFrame, resource_calendars, error_threshold: int = 240):
         self.resource_calendars = resource_calendars
 
         row = trace.iloc[-1]
@@ -165,18 +167,18 @@ class ExcutionTimeModule:
         self.detectors[act].update(err)
 
         error_flag = False
-        if len(self.err_window[act]) == self.err_window[act].maxlen and win_mae > 240:
+        if len(self.err_window[act]) == self.err_window[act].maxlen and win_mae > error_threshold:
             error_flag = True
         if self.detectors[act].drift_detected or error_flag:
             self.rebuilding_time += 1
             if self.detectors[act].drift_detected:
                 # print(f"Drift")
-                width = min(int(self.detectors[act].width), len(self.err_window[act]))
+                width = min(int(self.detectors[act].width), len(self.buffers[act]))
                 recent = list(self.buffers[act])[-width:]
                 self.detectors[act] = ADWIN(min_window_length=10, delta=0.05)
             else:
                 # print(f"ERROR")
-                recent = [self.buffers[act][-1]]
+                recent = list(self.buffers[act])[-self.err_window[act].maxlen:]
             self.err_window[act].clear()
             # print(f"Rebuliding Execution Time Module for act: {act} at {start_ts}")
             new_model = tree.HoeffdingAdaptiveTreeRegressor(

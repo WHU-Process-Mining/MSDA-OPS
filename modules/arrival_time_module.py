@@ -136,7 +136,7 @@ class ArrivalTimeModule:
         self.max_at = max(self.max_at, y_row)
 
 
-    def get_arrival_time(self, trace_first_event, update_flag: bool = True):
+    def get_arrival_time(self, trace_first_event, error_threshold: int = 240, update_flag: bool = True):
         self.case_id += 1
         real_trace_time = trace_first_event[START_TIME_KEY]
         delta = self.arrival_time_model.predict_one({'hour': self.last_arrival_time.hour,
@@ -176,19 +176,19 @@ class ArrivalTimeModule:
             win_mae = sum(self.err_window) / len(self.err_window)
             self.err_window.append(err_min)
             error_flag = False
-            if len(self.err_window) == self.err_window.maxlen and win_mae > 240:
+            if len(self.err_window) == self.err_window.maxlen and win_mae > error_threshold:
                 error_flag = True
             if self.detector.drift_detected or error_flag:
                 # print(f"Update Arrival Time Model at {real_trace_time}")
                 self.update_num += 1
                 if self.detector.drift_detected:
                     # print(f"Drift")
-                    width = min(int(self.detector.width), len(self.err_window))
+                    width = min(int(self.detector.width), len(self.update_rows))
                     update_log = self.update_rows[-width:]
                     self.detector = ADWIN(min_window_length=10, delta=0.05)
                 else:
                     # print(f"ERROR")
-                    update_log = self.update_rows[-2:]
+                    update_log = self.update_rows[-self.err_window.maxlen:]
                 self.err_window.clear()
                 update_log = pd.DataFrame(update_log)
                 self.arrival_time_model, self.min_at, self.max_at = self.discover_arrival_model(update_log)

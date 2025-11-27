@@ -118,7 +118,7 @@ class ResourceModule:
         return resource
 
 
-    def update_model(self, event:pd.Series):
+    def update_model(self, event:pd.Series, error_threshold: float = 0.9):
 
         act = event[ACTIVITY_KEY]
         res = event[RESOURCE_KEY]
@@ -158,7 +158,7 @@ class ResourceModule:
         win_supr = sum(self.err_window[act]) / len(self.err_window[act])
 
         error_flag = False
-        if len(self.err_window[act]) == self.err_window[act].maxlen and win_supr > 0.9:
+        if len(self.err_window[act]) == self.err_window[act].maxlen and win_supr > error_threshold:
             error_flag = True
 
         if self.act_detectors[act].drift_detected or error_flag:
@@ -166,12 +166,12 @@ class ResourceModule:
             # print(f"Activity Resource Rebuilt for act: {act} at {start_ts}")
             if self.act_detectors[act].drift_detected:
                 # print("Drift")
-                width = min(int(self.act_detectors[act].width), len(self.err_window[act]))
+                width = min(int(self.act_detectors[act].width), len(self.act_buffers[act]))
                 recent = list(self.act_buffers[act])[-width:]
                 self.act_detectors[act] = ADWIN(min_window_length=10, delta=0.05)
             else:
                 # print("Error")
-                recent = [self.act_buffers[act][-1]]
+                recent = list(self.act_buffers[act])[-self.err_window[act].maxlen:]
             self.err_window[act].clear()
             cnt = Counter(recent)
             self.act_res_counts[act] = cnt

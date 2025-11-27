@@ -11,6 +11,39 @@ if __name__ == "__main__":
 
     # dataset_name = "BPIC2012_W"
     dataset_name = "BPIC2017_W"
+    # dataset_name = "ACR"
+    # dataset_name = "Production"
+
+    if dataset_name == "BPIC2012_W":
+        parameters = {'process_fitness_threshold': 0.5,
+                  'process_error_threshold': 0.9,
+                  'arrival_error_threshold':60,
+                  'res_error_threshold': 0.5,
+                  'wt_error_threshold': 240,
+                  'et_error_threshold':180,}
+    if dataset_name == "BPIC2017_W":
+        parameters = {'process_fitness_threshold': 0.7,
+                  'process_error_threshold': 0.9,
+                  'arrival_error_threshold':300,
+                  'res_error_threshold': 0.7,
+                  'wt_error_threshold': 180,
+                  'et_error_threshold':300,}
+    elif dataset_name == "ACR":
+        parameters = {'process_fitness_threshold':0.7, 
+                  'process_error_threshold':0.5,
+                  'arrival_error_threshold':60,
+                  'res_error_threshold': 0.5,
+                  'wt_error_threshold': 180,
+                  'et_error_threshold':300,
+                  }
+    elif dataset_name == "Production":
+        parameters = {'process_fitness_threshold':0.7, 
+                  'process_error_threshold':0.5,
+                  'arrival_error_threshold':60,
+                  'res_error_threshold': 0.5,
+                  'wt_error_threshold': 180,
+                  'et_error_threshold':300,
+                  }
 
     split_ratio = 0.1
     sim_num = 10
@@ -50,7 +83,7 @@ if __name__ == "__main__":
     for N in range(1, sim_num+1):
         print(f"Simulation {N}...")
         simulator = Simulator(initial_log, initial_completed_caseids, grace_period=25000)
-        sim_log = simulator.apply_online_simulation(online_stream, simulation_case_num)
+        sim_log = simulator.apply_online_simulation(online_stream, simulation_case_num, parameters)
         sim_log.to_csv(f"results/{dataset_name}/simulation_log_{N}.csv", index=False)
         evaluation_measurement = evaluate_simulation(test_stream, sim_log, N)
         result_df = pd.concat([result_df, evaluation_measurement], ignore_index=True)

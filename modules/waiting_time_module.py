@@ -85,13 +85,16 @@ class WaitingTimeModule:
         return models_res, min_wt, max_wt
     
     def get_waiting_time(self, resource, cur_ts, running_event_num):
-        waiting_time = self.waiting_time_distrib[resource].predict_one({'hour': cur_ts.hour, 
-                                                                            'weekday': cur_ts.weekday(), 
-                                                                            'n. running events': running_event_num})
-        waiting_time = max(self.min_wt[resource], min(waiting_time, self.max_wt[resource]))
+        if resource in self.waiting_time_distrib:
+            waiting_time = self.waiting_time_distrib[resource].predict_one({'hour': cur_ts.hour, 
+                                                                                'weekday': cur_ts.weekday(), 
+                                                                                'n. running events': running_event_num})
+            waiting_time = max(self.min_wt[resource], min(waiting_time, self.max_wt[resource]))
+        else:
+            waiting_time = 0.0
         return waiting_time
     
-    def update(self, trace: pd.DataFrame, resource_calendars: dict):
+    def update(self, trace: pd.DataFrame, resource_calendars: dict, error_threshold: int = 240):
         self.resource_calendars = resource_calendars
         row = trace.iloc[-1]
         res = row[RESOURCE_KEY]
@@ -155,19 +158,19 @@ class WaitingTimeModule:
             self.detectors[res].update(err)
 
             error_flag = False
-            if len(self.err_window[res]) == self.err_window[res].maxlen and win_mae > 240:
+            if len(self.err_window[res]) == self.err_window[res].maxlen and win_mae > error_threshold:
                 error_flag = True
 
             if self.detectors[res].drift_detected or error_flag:
                 self.rebuilding_time += 1
                 if self.detectors[res].drift_detected:
                     # print(f"Drift")
-                    width = min(int(self.detectors[res].width), len(self.err_window[res]))
+                    width = min(int(self.detectors[res].width), len(self.buffers[res]))
                     recent = list(self.buffers[res])[-width:]
                     self.detectors[res] = ADWIN(min_window_length=10, delta=0.05)
                 else:
                     # print(f"ERROR")
-                    recent = [self.buffers[res][-1]]
+                    recent = list(self.buffers[res])[-self.err_window[res].maxlen:]
                 self.err_window[res].clear()
                 # print(f"Rebuliding Waiting Time Module for res: {res} at {start_ts}")
                 new_model = tree.HoeffdingAdaptiveTreeRegressor(leaf_prediction="mean", max_depth=5, seed=72, grace_period=self.grace_period)
