@@ -1,0 +1,100 @@
+run_num,metric,distance
+1,dl,0.10744281045751634
+1,two_gram_distance,0.139847247827232
+1,three_gram_distance,0.17511726602635694
+1,circadian_event_distribution,1.789267411185026
+1,circadian_workforce_distribution,1.8470108418186835
+1,arrival_event_distribution,21.125000000000007
+1,relative_event_distribution,51.51989691222683
+1,absolute_event_distribution,93.39880530613215
+1,cycle_time_distribution,144.4588235294118
+2,dl,0.08861827306680248
+2,two_gram_distance,0.1195609564876519
+2,three_gram_distance,0.1518917119715966
+2,circadian_event_distribution,1.7995519407935072
+2,circadian_workforce_distribution,1.8708685162893774
+2,arrival_event_distribution,21.125000000000007
+2,relative_event_distribution,47.041031932953345
+2,absolute_event_distribution,115.08575688504986
+2,cycle_time_distribution,134.17205882352945
+3,dl,0.09571661998132586
+3,two_gram_distance,0.12087622063869095
+3,three_gram_distance,0.1514880286417543
+3,circadian_event_distribution,1.841242325458765
+3,circadian_workforce_distribution,1.8392570423783179
+3,arrival_event_distribution,21.125000000000007
+3,relative_event_distribution,43.300612460751836
+3,absolute_event_distribution,102.96056597245457
+3,cycle_time_distribution,129.59558823529414
+4,dl,0.09677579365079365
+4,two_gram_distance,0.1271387207159779
+4,three_gram_distance,0.1596338468408127
+4,circadian_event_distribution,1.9631991259361583
+4,circadian_workforce_distribution,2.033839174975219
+4,arrival_event_distribution,21.125000000000007
+4,relative_event_distribution,39.86680119264933
+4,absolute_event_distribution,124.7250473365556
+4,cycle_time_distribution,140.31176470588238
+5,dl,0.09691005889535301
+5,two_gram_distance,0.12409906958458918
+5,three_gram_distance,0.15960404849293738
+5,circadian_event_distribution,1.8457785818052992
+5,circadian_workforce_distribution,1.9572481018019876
+5,arrival_event_distribution,21.125000000000007
+5,relative_event_distribution,48.57864378268678
+5,absolute_event_distribution,106.26736787759717
+5,cycle_time_distribution,139.62352941176474
+6,dl,0.09956248408454291
+6,two_gram_distance,0.13357972544878563
+6,three_gram_distance,0.16584601611459265
+6,circadian_event_distribution,1.933982592766981
+6,circadian_workforce_distribution,2.021633017015099
+6,arrival_event_distribution,21.125000000000007
+6,relative_event_distribution,48.411786049203116
+6,absolute_event_distribution,91.88893825333336
+6,cycle_time_distribution,145.59117647058824
+7,dl,0.09933006535947712
+7,two_gram_distance,0.12847542495717487
+7,three_gram_distance,0.16169404402726562
+7,circadian_event_distribution,1.77885926702479
+7,circadian_workforce_distribution,1.8000644613437722
+7,arrival_event_distribution,21.125000000000007
+7,relative_event_distribution,46.6837604863179
+7,absolute_event_distribution,105.47294761502546
+7,cycle_time_distribution,138.6073529411765
+8,dl,0.10920230912877972
+8,two_gram_distance,0.14574579831932774
+8,three_gram_distance,0.1836007130124777
+8,circadian_event_distribution,1.8378446237403798
+8,circadian_workforce_distribution,1.9161361756089228
+8,arrival_event_distribution,21.125000000000007
+8,relative_event_distribution,41.16293070858094
+8,absolute_event_distribution,119.12987251621087
+8,cycle_time_distribution,127.3279411764706
+9,dl,0.10056605975723623
+9,two_gram_distance,0.13018296696064235
+9,three_gram_distance,0.16690856313497823
+9,circadian_event_distribution,1.772937804195025
+9,circadian_workforce_distribution,1.8207364858624455
+9,arrival_event_distribution,21.125000000000007
+9,relative_event_distribution,45.816332036995135
+9,absolute_event_distribution,119.92458029813307
+9,cycle_time_distribution,130.5044117647059
+10,dl,0.10125779857397504
+10,two_gram_distance,0.12861100118717847
+10,three_gram_distance,0.1631808522536629
+10,circadian_event_distribution,1.8461750826265138
+10,circadian_workforce_distribution,1.9050299414370635
+10,arrival_event_distribution,21.125000000000007
+10,relative_event_distribution,54.82615151059135
+10,absolute_event_distribution,92.85630980793061
+10,cycle_time_distribution,151.8985294117647
+avg,dl,0.09954 (0.00585)
+avg,two_gram_distance,0.12981 (0.00814)
+avg,three_gram_distance,0.1639 (0.00982)
+avg,circadian_event_distribution,1.84088 (0.06371)
+avg,circadian_workforce_distribution,1.90118 (0.08156)
+avg,arrival_event_distribution,21.125 (0.0)
+avg,relative_event_distribution,46.72079 (4.54026)
+avg,absolute_event_distribution,107.17102 (12.13814)
+avg,cycle_time_distribution,138.20912 (7.85838)
