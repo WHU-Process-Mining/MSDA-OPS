@@ -1,59 +1,53 @@
 import sys
 sys.path.append('/home/inspur/zhengchao/MD-OBPS')
 import os
+import yaml
 import pandas as pd
+from concurrent.futures import ProcessPoolExecutor
+import multiprocessing as mp
 
 from modules.simulator import Simulator, CASE_ID_KEY, ACTIVITY_KEY, RESOURCE_KEY, START_TIME_KEY, END_TIME_KEY
 from utils.evaluation import evaluate_simulation
 
+def run_single_simulation(N,
+                          dataset_name,
+                          initial_log,
+                          initial_completed_caseids,
+                          online_stream,
+                          simulation_case_num,
+                          parameters,
+                          test_stream):
+    print(f"[PID {os.getpid()}] Simulation {N}...")
+
+    simulator = Simulator(initial_log, initial_completed_caseids, grace_period=25000)
+
+    sim_log = simulator.apply_online_simulation(online_stream, simulation_case_num, parameters)
+    sim_path = f"results/{dataset_name}/simulation_log_{N}.csv"
+    sim_log.to_csv(sim_path, index=False)
+
+    evaluation_measurement = evaluate_simulation(test_stream, sim_log, N)
+    return evaluation_measurement
 
 if __name__ == "__main__":
 
     # dataset_name = "BPIC2012_W"
-    dataset_name = "BPIC2017_W"
-    # dataset_name = "ACR"
+    # dataset_name = "BPIC2017_W"
+    dataset_name = "ACR"
     # dataset_name = "Production"
-
-    if dataset_name == "BPIC2012_W":
-        parameters = {'process_fitness_threshold': 0.5,
-                  'process_error_threshold': 0.9,
-                  'arrival_error_threshold':60,
-                  'res_error_threshold': 0.5,
-                  'wt_error_threshold': 240,
-                  'et_error_threshold':180,}
-    if dataset_name == "BPIC2017_W":
-        parameters = {'process_fitness_threshold': 0.7,
-                  'process_error_threshold': 0.9,
-                  'arrival_error_threshold':300,
-                  'res_error_threshold': 0.7,
-                  'wt_error_threshold': 180,
-                  'et_error_threshold':300,}
-    elif dataset_name == "ACR":
-        parameters = {'process_fitness_threshold':0.7, 
-                  'process_error_threshold':0.5,
-                  'arrival_error_threshold':60,
-                  'res_error_threshold': 0.5,
-                  'wt_error_threshold': 180,
-                  'et_error_threshold':300,
-                  }
-    elif dataset_name == "Production":
-        parameters = {'process_fitness_threshold':0.7, 
-                  'process_error_threshold':0.5,
-                  'arrival_error_threshold':60,
-                  'res_error_threshold': 0.5,
-                  'wt_error_threshold': 180,
-                  'et_error_threshold':300,
-                  }
 
     split_ratio = 0.1
     sim_num = 10
-    stream_path = f"/home/inspur/zhengchao/BPS_datasets/{dataset_name}/online-process/event_stream.csv"
+
+    path = f'configs/{dataset_name}.yaml'
+    with open(path) as f:
+        parameters: dict = yaml.load(f, Loader=yaml.FullLoader)
+
     os.makedirs(f'results', exist_ok= True)
     if dataset_name not in os.listdir("results"):
         os.mkdir(f"results/{dataset_name}/")
         
 
-    event_stream = pd.read_csv(stream_path, dtype=str)
+    event_stream = pd.read_csv(parameters["data_path"], dtype=str)
     event_stream[CASE_ID_KEY] = event_stream[CASE_ID_KEY].astype(str)
     event_stream[ACTIVITY_KEY] = event_stream[ACTIVITY_KEY].astype(str)
     event_stream[RESOURCE_KEY] = event_stream[RESOURCE_KEY].astype(str)
@@ -79,14 +73,30 @@ if __name__ == "__main__":
     print("Number of cases in the simulation: ", simulation_case_num)
     print("Simulation start time: ", simulation_start_time)
 
-    result_df = pd.DataFrame()
-    for N in range(1, sim_num+1):
-        print(f"Simulation {N}...")
-        simulator = Simulator(initial_log, initial_completed_caseids, grace_period=25000)
-        sim_log = simulator.apply_online_simulation(online_stream, simulation_case_num, parameters)
-        sim_log.to_csv(f"results/{dataset_name}/simulation_log_{N}.csv", index=False)
-        evaluation_measurement = evaluate_simulation(test_stream, sim_log, N)
-        result_df = pd.concat([result_df, evaluation_measurement], ignore_index=True)
+    result_list = []
+    max_workers = min(sim_num, mp.cpu_count())
+
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = []
+        for N in range(1, sim_num+1):
+            fut = executor.submit(
+                run_single_simulation,
+                N,
+                dataset_name,
+                initial_log,
+                initial_completed_caseids,
+                online_stream,
+                simulation_case_num,
+                parameters,
+                test_stream
+            )
+            futures.append(fut)
+
+        for fut in futures:
+            eval_df = fut.result()
+            result_list.append(eval_df)
+
+    result_df = pd.concat(result_list, ignore_index=True)
     
     stats_df = result_df.groupby("metric", sort=False)["distance"].agg(["mean", "std"]).reset_index()
     stats_df["distance"] = stats_df.apply(

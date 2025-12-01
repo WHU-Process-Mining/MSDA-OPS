@@ -1,10 +1,11 @@
 import pandas as pd
+from collections import deque
+
 from river.drift import ADWIN
 from river.tree.hoeffding_adaptive_tree_regressor import HoeffdingAdaptiveTreeRegressor
 
 from modules.simulator import CASE_ID_KEY, START_TIME_KEY, END_TIME_KEY
 from utils.time_utils import count_false_hours, add_minutes_with_calendar, cal_error_with_calendar
-from collections import deque
 
 
 def discover_arrival_calendar(log: pd.DataFrame, thr_h: float = 0.0, thr_wd: float = 0.0) -> dict:
@@ -191,7 +192,7 @@ class ArrivalTimeModule:
                     update_log = self.update_rows[-self.err_window.maxlen:]
                 self.err_window.clear()
                 update_log = pd.DataFrame(update_log)
-                self.arrival_time_model, self.min_at, self.max_at = self.discover_arrival_model(update_log)
+                self.arrival_time_model, self.min_at, self.max_at = self.discover_arrival_model(update_log, self.grace_period)
                 self.update_rows = [{CASE_ID_KEY: f'case_{self.case_id}', START_TIME_KEY: real_trace_time, END_TIME_KEY: trace_first_event[END_TIME_KEY]}]
             
             else: # single sample increment learning

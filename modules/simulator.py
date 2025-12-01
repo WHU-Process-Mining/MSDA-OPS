@@ -30,7 +30,7 @@ class Simulator:
 
         self.arrival_model = ArrivalTimeModule(inital_log, grace_period)
         self.resource_model = ResourceModule(inital_log)
-        self.process_model = ProcessModelModule(inital_log, completed_caseids, grace_period)
+        self.process_model = ProcessModelModule(inital_log, completed_caseids)
         self.excution_time_model = ExcutionTimeModule(inital_log, self.resource_model.resource_calendar, grace_period)
         self.waiting_time_model = WaitingTimeModule(inital_log, self.resource_model.resource_calendar, grace_period)
         ongoing_case_ids = set(inital_log[CASE_ID_KEY].unique())-set(completed_caseids)
@@ -49,8 +49,7 @@ class Simulator:
         arrival_error_threshold = parameters.get('arrival_error_threshold',240)
         Arrival_Update_Flag = parameters.get('Arrival_Update_Flag',True)
         Process_Update_Flag = parameters.get('Process_Update_Flag',True)
-        trace_level_num = 0
-        trace_list = []
+
         self.sim_num = sim_num
         counts = Counter(streams[CASE_ID_KEY])
         for _, event in tqdm(streams.iterrows(), total=len(streams)):
@@ -63,12 +62,6 @@ class Simulator:
                 if counts[case_id] == 0: # trace is complete
                     complete_trace = self.ongoing_trace.pop(case_id)
                     if Process_Update_Flag and update_flag:
-                        # trace_level_num += 1
-                        # trace_list.append(complete_trace)
-                        # if trace_level_num==2:
-                        #     complete_log = pd.concat(trace_list, ignore_index=True)
-                        #     self.process_model.continue_learning_by_trace(complete_log)
-                        #     self.process_model.update(complete_log)
                         self.process_model.update(complete_trace, fitness_threshold)
             else: # new trace
                 self.ongoing_trace[case_id] = pd.DataFrame([event])
@@ -102,7 +95,7 @@ class Simulator:
         assert self.sim_num == sim_log[CASE_ID_KEY].nunique(), "Simulation num is Wrong!"
         return sim_log
     
-    def update_event_level_model(self, trace: pd.DataFrame, parameters:dict = {}, update_flag: bool = True):
+    def update_event_level_model(self, trace: pd.DataFrame, parameters:dict = {}):
         cur_event = trace.iloc[-1]
         arrival_error_threshold = parameters.get('arrival_error_threshold',240)
         res_error_threshold = parameters.get('res_error_threshold',0.9)

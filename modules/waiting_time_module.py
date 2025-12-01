@@ -140,14 +140,12 @@ class WaitingTimeModule:
             y_hat = self.waiting_time_distrib[res].predict_one(X)
 
             cal_res = self.resource_calendars.get(res, {wd: {h: True for h in range(24)} for wd in range(7)})
-            off_duty_h = count_false_hours(cal_res, prev_ts, start_ts)  # 返回小时数
+            off_duty_h = count_false_hours(cal_res, prev_ts, start_ts)  # hours
             y = max((start_ts - prev_ts).total_seconds()/60.0 - off_duty_h*60.0, 0.0)
 
-            # 维护 min/max
             self.min_wt[res] = min(self.min_wt[res], y)
             self.max_wt[res] = max(self.max_wt[res], y)
 
-            # 近窗样本缓冲
             self.buffers[res].append((X.copy(), y))
             self.active_intervals[res].append((start_ts, end_ts))
 
@@ -178,7 +176,6 @@ class WaitingTimeModule:
                     new_model.learn_one(Xb, yb)
                 self.waiting_time_distrib[res] = new_model
             else:
-                # 正常增量学习
                 self.waiting_time_distrib[res].learn_one(X, y)
 
                 

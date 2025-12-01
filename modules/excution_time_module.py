@@ -1,7 +1,6 @@
 import pandas as pd
 from tqdm import tqdm
 from collections import deque
-from river import stats
 import math
 from river import tree
 from river.drift import ADWIN

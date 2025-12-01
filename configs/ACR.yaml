@@ -1,0 +1,9 @@
+data_path: 'streams/ACR/event_stream.csv'
+
+process_fitness_threshold: 0.7
+process_error_threshold: 0.5
+arrival_error_threshold: 60
+res_error_threshold: 0.5
+wt_error_threshold: 180
+et_error_threshold: 300
+                  

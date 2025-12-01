@@ -7,7 +7,6 @@ from modules.simulator import ACTIVITY_KEY, RESOURCE_KEY, START_TIME_KEY, END_TI
 
 def normalize_dist(cnt: Counter) -> dict:
     laplace = 1.0
-    # 拉普拉斯平滑 + 归一化
     keys = list(cnt.keys())
     Z = sum(cnt.values()) + laplace * len(keys)
     if Z <= 0:
