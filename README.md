@@ -33,7 +33,7 @@ Key parameters include:
 - data_path: path to the input event stream.
 - process_fitness_threshold: fitness threshold for the process model N.
 - process_error_threshold: error threshold for the branch model $P_B$.
--arrival_error_threshold: error threshold for the arrival model A.
+- arrival_error_threshold: error threshold for the arrival model A.
 - res_error_threshold: error threshold for the resource model R.
 - wt_error_threshold: error threshold for the waiting-time model W.
 - et_error_threshold: error threshold for the execution-time model E.
@@ -60,9 +60,9 @@ Lower values indicate better alignment between simulated and real behavior (smal
 
 | Event Log  | Method    |   NGD  |  CFLD  |    AED    |    CAD    |  CED  |   RED   |   CTD    |  CWD  |
 |-----------|-----------|-------:|-------:|----------:|----------:|------:|--------:|---------:|------:|
-| **BPIC12W** | SIMOD     | 0.250  | 0.274  | 1251.559  | 1314.318  | 5.079 |  62.610 | 131.025  | 4.426 |
-|           | AgentSim  | 0.320  | 0.343  | 1500.402  | 1654.119  | 3.846 | 162.442 | 280.662  | 3.657 |
-|           | OBPS      | 0.234  | 0.327  | 274.896   | 114.320   | 2.513 |  66.424 |  83.840  | 3.285 |
+| **BPIC12W** | SIMOD[1]     | 0.250  | 0.274  | 1251.559  | 1314.318  | 5.079 |  62.610 | 131.025  | 4.426 |
+|           | AgentSim[2]  | 0.320  | 0.343  | 1500.402  | 1654.119  | 3.846 | 162.442 | 280.662  | 3.657 |
+|           | OBPS[3]      | 0.234  | 0.327  | 274.896   | 114.320   | 2.513 |  66.424 |  83.840  | 3.285 |
 |           | **OURS**  | **0.109** | **0.100** | **114.423** | **35.264** | **1.261** | **45.434** | **37.983** | **1.521** |
 | **BPIC17W** | SIMOD     | 0.257  | 0.184  | 860.145   | 861.299   | 4.380 |  36.702 |  73.045  | 4.056 |
 |           | AgentSim  | 0.147  | 0.139  | 1337.698  | 1360.753  | 2.417 |  67.525 | 101.322  | 2.732 |
