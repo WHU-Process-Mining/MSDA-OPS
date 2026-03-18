@@ -1,6 +1,6 @@
 # MDSA-OPS
 
-Code for the paper submitted to CAiSE 2026 on multi-source drift-aware online process simulation.
+Code for the paper submitted to ICWS 2026 on multi-source drift-aware online process simulation.
 
 ---
 
