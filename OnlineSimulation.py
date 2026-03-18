@@ -1,5 +1,3 @@
-import sys
-sys.path.append('/home/inspur/zhengchao/MD-OBPS')
 import os
 import yaml
 import pandas as pd
