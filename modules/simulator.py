@@ -97,7 +97,7 @@ class Simulator:
     
     def update_event_level_model(self, trace: pd.DataFrame, parameters:dict = {}):
         cur_event = trace.iloc[-1]
-        arrival_error_threshold = parameters.get('arrival_error_threshold',240)
+        process_error_threshold = parameters.get('process_error_threshold',0.9)
         res_error_threshold = parameters.get('res_error_threshold',0.9)
         wt_error_threshold = parameters.get('wt_error_threshold',240)
         et_error_threshold = parameters.get('et_error_threshold',240)
@@ -106,7 +106,7 @@ class Simulator:
         WT_Update_Flag = parameters.get('WT_Update_Flag',True)
         ET_Update_Flag = parameters.get('ET_Update_Flag',True)
         if Process_Update_Flag:
-            self.process_model.continue_learning(trace, arrival_error_threshold)
+            self.process_model.continue_learning(trace, process_error_threshold)
         if Resource_Update_Flag:
             self.resource_model.update_model(cur_event, res_error_threshold)
         if ET_Update_Flag:
