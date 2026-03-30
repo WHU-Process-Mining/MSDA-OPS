@@ -195,7 +195,7 @@ class ProcessModelModule:
         initial_log["is_completed"] = initial_log[CASE_ID_KEY].isin(completed_caseids)
         self.transition_dist = self.discover_transition_dist(initial_log)
         self.t_detectors = {t: ADWIN(min_window_length=100, delta=0.1) for t in self.net.transitions} 
-        self.err_window = {t: deque(maxlen=100) for t in self.net.transitions}
+        self.err_window = {t: deque(maxlen=10) for t in self.net.transitions}
         self.complete_traces = initial_log_complete
         self.net_update_time = 0
         self.dt_new_build_time = 0
@@ -364,7 +364,7 @@ class ProcessModelModule:
                         y_ser_all = pd.Series(all_y, name="class")
                         new_clf.fit(X_df_all.values, y_ser_all.values)
                         self.transition_dist[t] = new_clf
-                        self.t_detectors[t] = ADWIN(min_window_length=100, delta=0.01)
+                        self.t_detectors[t] = ADWIN(min_window_length=100, delta=0.1)
                 
                     self.err_window[t].clear()
     
@@ -392,8 +392,8 @@ class ProcessModelModule:
             self.transition_labels = sorted(net_transition_labels)
             log['is_completed'] = True
             self.transition_dist = self.discover_transition_dist(log)
-            self.t_detectors = {t: ADWIN(min_window_length=10, delta=0.01) for t in self.net.transitions} 
-            self.err_window = {t: deque(maxlen=20) for t in self.net.transitions}
+            self.t_detectors = {t: ADWIN(min_window_length=100, delta=0.1) for t in self.net.transitions} 
+            self.err_window = {t: deque(maxlen=10) for t in self.net.transitions}
 
 
         
